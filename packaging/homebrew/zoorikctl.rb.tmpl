@@ -1,0 +1,36 @@
+class Zoorikctl < Formula
+  desc "Connect a Kubernetes cluster to Zoorik"
+  homepage "https://zoorik.com"
+  version "__VERSION__"
+  license "Proprietary"
+
+  on_macos do
+    on_arm do
+      url "__BASE_URL__/zoorikctl___VERSION___darwin_arm64.tar.gz"
+      sha256 "__SHA_DARWIN_ARM64__"
+    end
+    on_intel do
+      url "__BASE_URL__/zoorikctl___VERSION___darwin_amd64.tar.gz"
+      sha256 "__SHA_DARWIN_AMD64__"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "__BASE_URL__/zoorikctl___VERSION___linux_arm64.tar.gz"
+      sha256 "__SHA_LINUX_ARM64__"
+    end
+    on_intel do
+      url "__BASE_URL__/zoorikctl___VERSION___linux_amd64.tar.gz"
+      sha256 "__SHA_LINUX_AMD64__"
+    end
+  end
+
+  def install
+    bin.install "zoorikctl"
+  end
+
+  test do
+    assert_match "zoorikctl", shell_output("#{bin}/zoorikctl version")
+  end
+end
