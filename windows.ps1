@@ -4,7 +4,7 @@
     Set-StrictMode -Version Latest
 
     $Repo = 'getzoorik/zoorikctl'
-    $BuildIdentity = '^https://github.com/getzoorik/coral/\.github/workflows/zoorikctl-release\.yaml@refs/heads/main$'
+    $BuildIdentity = '^https://github.com/getzoorik/(coral/\.github/workflows/zoorikctl-release|zoorikctl/\.github/workflows/release)\.yaml@refs/heads/main$'
     $Binary = 'zoorikctl.exe'
     $ChecksumFile = 'checksums.txt'
     $StopMarker = 'zoorikctl-install-stopped'

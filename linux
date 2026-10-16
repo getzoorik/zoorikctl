@@ -3,7 +3,7 @@
 set -eu
 
 REPO="getzoorik/zoorikctl"
-BUILD_IDENTITY='^https://github.com/getzoorik/coral/\.github/workflows/zoorikctl-release\.yaml@refs/heads/main$'
+BUILD_IDENTITY='^https://github.com/getzoorik/(coral/\.github/workflows/zoorikctl-release|zoorikctl/\.github/workflows/release)\.yaml@refs/heads/main$'
 BINARY="zoorikctl"
 CHECKSUM_FILE="checksums.txt"
 
