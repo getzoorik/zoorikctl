@@ -1,0 +1,306 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. v0.5.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  BINARY: zoorikctl
+  TAP_REPO: getzoorik/homebrew-tap
+  SCOOP_REPO: getzoorik/scoop-bucket
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::a release runs from main only: Azure trusts this repository's main ref alone, and the signature names it. This run is on $GITHUB_REF."
+            exit 1
+          fi
+          version="$VERSION"
+          case "$version" in
+            v*) ;;
+            *) echo "::error::version must start with v, got $version"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $version"
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          out="dist/${BINARY}"
+          if [ "$GOOS" = "windows" ]; then out="dist/${BINARY}.exe"; fi
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/getzoorik/zoorikctl/internal/api.version=${VERSION}" \
+            -o "$out" ./cmd/zoorikctl
+
+      - name: package
+        working-directory: dist
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          if [ "$GOOS" = "windows" ]; then
+            zip -q "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.zip" "${BINARY}.exe"
+            rm "${BINARY}.exe"
+          else
+            tar -czf "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "${BINARY}"
+            rm "${BINARY}"
+          fi
+          ls -l
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zoorikctl-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: checksums, signature and release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: staging
+          merge-multiple: true
+
+      - name: checksums
+        working-directory: staging
+        run: |
+          set -eu
+          sha256sum zoorikctl_* > checksums.txt
+          cat checksums.txt
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: sign the checksums
+        working-directory: staging
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -eu
+          cosign sign-blob checksums.txt \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem
+          cosign verify-blob checksums.txt \
+            --signature checksums.txt.sig \
+            --certificate checksums.txt.pem \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yaml@refs/heads/main$" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+      - name: render the Homebrew formula and the Scoop manifest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+          sh packaging/render.sh "$VERSION" "$base" staging/checksums.txt staging/packaging
+          cat staging/packaging/zoorikctl.rb
+
+      - name: Azure login
+        uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ secrets.ZOORIK_CI_CLIENT_ID }}
+          tenant-id: ${{ secrets.ZOORIK_TENANT_ID }}
+          subscription-id: ${{ secrets.ZOORIK_SUBSCRIPTION_ID }}
+
+      - name: read the zoorik-ci key from Key Vault
+        id: key
+        env:
+          VAULT: ${{ secrets.ZOORIK_KEY_VAULT }}
+        run: |
+          set -euo pipefail
+          if ! key="$(az keyvault secret show --vault-name "$VAULT" --name zoorik-ci-private-key --query value -o tsv)" || [ -z "$key" ]; then
+            echo "::error title=zoorik-ci key missing::the Key Vault secret zoorik-ci-private-key is empty or unreadable."
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<< "$key"
+          delimiter="ZOORIK_CI_KEY_$(openssl rand -hex 16)"
+          {
+            echo "pem<<${delimiter}"
+            printf '%s\n' "$key"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: mint the release token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23li2Maf5ZrfRAzK7n
+          private-key: ${{ steps.key.outputs.pem }}
+          owner: getzoorik
+          repositories: |
+            zoorikctl
+            homebrew-tap
+            scoop-bucket
+
+      - name: publish the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          token: ${{ steps.token.outputs.token }}
+          tag_name: ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: zoorikctl ${{ needs.version.outputs.version }}
+          files: |
+            staging/zoorikctl_*
+            staging/checksums.txt
+            staging/checksums.txt.sig
+            staging/checksums.txt.pem
+            staging/packaging/zoorikctl.rb
+            staging/packaging/zoorikctl.json
+          body: |
+            ## Install
+
+            **macOS**
+            ```
+            brew tap getzoorik/tap
+            brew trust getzoorik/tap
+            brew install zoorikctl
+            ```
+            or
+            ```
+            curl -fsSL https://get.zoorik.com/macos | sh
+            ```
+
+            **Linux**
+            ```
+            curl -fsSL https://get.zoorik.com/linux | sh
+            ```
+
+            **Windows**
+            ```
+            scoop bucket add getzoorik https://github.com/getzoorik/scoop-bucket
+            scoop install zoorikctl
+            ```
+            or
+            ```
+            irm https://get.zoorik.com/windows.ps1 | iex
+            ```
+
+            ## Verifying this release
+
+            `checksums.txt` carries the SHA-256 of every archive and is signed keylessly by
+            this workflow. Every installer above checks an archive against it before writing
+            anything to disk.
+
+            ```
+            cosign verify-blob checksums.txt \
+              --signature checksums.txt.sig \
+              --certificate checksums.txt.pem \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/release\.yaml@refs/heads/main$" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+            ```
+
+      - name: publish the installers behind get.zoorik.com
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages
+          cp install/install.sh pages/macos
+          cp install/install.sh pages/linux
+          cp install/install.ps1 pages/windows.ps1
+          cd pages
+          if git diff --quiet HEAD; then
+            echo "the installers behind get.zoorik.com already match ${VERSION}"
+            exit 0
+          fi
+          git -c user.name=zoorik-release -c user.email=release@zoorik.com \
+            commit -qam "Installers for zoorikctl ${VERSION}"
+          git push -q origin HEAD
+          echo "published the installers for ${VERSION}"
+
+      - name: push the Homebrew formula to the tap
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Formula
+          cp staging/packaging/zoorikctl.rb tap/Formula/zoorikctl.rb
+          cd tap
+          git add Formula/zoorikctl.rb
+          if git diff --cached --quiet; then
+            echo "Formula/zoorikctl.rb in ${TAP_REPO} already names ${VERSION}"
+            exit 0
+          fi
+          git -c user.name=zoorik-release -c user.email=release@zoorik.com \
+            commit -qm "zoorikctl ${VERSION}"
+          git push -q
+
+      - name: push the Scoop manifest to the bucket
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          git clone -q "https://x-access-token:${GH_TOKEN}@github.com/${SCOOP_REPO}.git" bucket
+          mkdir -p bucket/bucket
+          cp staging/packaging/zoorikctl.json bucket/bucket/zoorikctl.json
+          cd bucket
+          git add bucket/zoorikctl.json
+          if git diff --cached --quiet; then
+            echo "bucket/zoorikctl.json in ${SCOOP_REPO} already names ${VERSION}"
+            exit 0
+          fi
+          git -c user.name=zoorik-release -c user.email=release@zoorik.com \
+            commit -qm "zoorikctl ${VERSION}"
+          git push -q
