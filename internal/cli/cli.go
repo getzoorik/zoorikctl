@@ -111,6 +111,7 @@ type commonOptions struct {
 
 func commonFlags(set *flag.FlagSet, common *commonOptions) {
 	set.StringVar(&common.KubeContext, "kube-context", "", "the kubeconfig context to act on")
+	set.StringVar(&common.KubeContext, "context", "", "the same as --kube-context")
 	set.StringVar(&common.Kubeconfig, "kubeconfig", "", "kubeconfig file to read")
 	set.BoolVar(&common.DryRun, "dry-run", false, "print the plan and exit")
 	set.BoolVar(&common.Yes, "yes", false, "make the planned changes without asking")
@@ -157,7 +158,9 @@ USAGE
   zoorikctl version
 
   Every command acts on your kubeconfig's current context, as kubectl and helm do, or on the one
-  --kube-context names, and prints that context, its cluster, API server and kubeconfig first.
+  --kube-context (or --context) names, and prints that context, its cluster, API server and
+  kubeconfig first. Installed as a kubectl plugin, each command also runs as kubectl zoorik, for
+  example kubectl zoorik cluster connect.
 
 PREPARE
   Run by a cluster admin with their own cloud sign-in. It reads the cluster, says what provisions its
