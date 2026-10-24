@@ -1,0 +1,43 @@
+name: aos
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  agent:
+    if: >-
+      (github.event_name == 'issue_comment' &&
+        contains(github.event.comment.body, '@aos-app') &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association) &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.issue.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@aos-app') &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association) &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@aos-app') &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.review.author_association) &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issues' &&
+        (contains(github.event.issue.body, '@aos-app') || contains(github.event.issue.title, '@aos-app')) &&
+        contains(fromJSON('["OWNER","MEMBER"]'), github.event.issue.author_association))
+    uses: getzoorik/.github/.github/workflows/aos.yaml@95fef90b097e091163128ed8d83384123eb9cdd4
+    with:
+      agent: be/coral/zoorikctl
+    secrets:
+      AOS_APP_CLIENT_ID: ${{ secrets.AOS_APP_CLIENT_ID }}
+      AOS_APP_PRIVATE_KEY: ${{ secrets.AOS_APP_PRIVATE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
