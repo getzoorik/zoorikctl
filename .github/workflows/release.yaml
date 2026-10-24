@@ -86,13 +86,15 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
+          cp ../LICENSE LICENSE
           if [ "$GOOS" = "windows" ]; then
-            zip -q "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.zip" "${BINARY}.exe"
+            zip -q "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.zip" "${BINARY}.exe" LICENSE
             rm "${BINARY}.exe"
           else
-            tar -czf "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "${BINARY}"
+            tar -czf "${BINARY}_${VERSION}_${GOOS}_${GOARCH}.tar.gz" "${BINARY}" LICENSE
             rm "${BINARY}"
           fi
+          rm LICENSE
           ls -l
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -108,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -151,49 +153,9 @@ jobs:
           sh packaging/render.sh "$VERSION" "$base" staging/checksums.txt staging/packaging
           cat staging/packaging/zoorikctl.rb
 
-      - name: Azure login
-        uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
-        with:
-          client-id: ${{ secrets.ZOORIK_CI_CLIENT_ID }}
-          tenant-id: ${{ secrets.ZOORIK_TENANT_ID }}
-          subscription-id: ${{ secrets.ZOORIK_SUBSCRIPTION_ID }}
-
-      - name: read the zoorik-ci key from Key Vault
-        id: key
-        env:
-          VAULT: ${{ secrets.ZOORIK_KEY_VAULT }}
-        run: |
-          set -euo pipefail
-          if ! key="$(az keyvault secret show --vault-name "$VAULT" --name zoorik-ci-private-key --query value -o tsv)" || [ -z "$key" ]; then
-            echo "::error title=zoorik-ci key missing::the Key Vault secret zoorik-ci-private-key is empty or unreadable."
-            exit 1
-          fi
-          while IFS= read -r line; do
-            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
-          done <<< "$key"
-          delimiter="ZOORIK_CI_KEY_$(openssl rand -hex 16)"
-          {
-            echo "pem<<${delimiter}"
-            printf '%s\n' "$key"
-            echo "${delimiter}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: mint the release token
-        id: token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: Iv23li2Maf5ZrfRAzK7n
-          private-key: ${{ steps.key.outputs.pem }}
-          owner: getzoorik
-          repositories: |
-            zoorikctl
-            homebrew-tap
-            scoop-bucket
-
       - name: publish the release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          token: ${{ steps.token.outputs.token }}
           tag_name: ${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: zoorikctl ${{ needs.version.outputs.version }}
@@ -246,6 +208,65 @@ jobs:
               --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/release\.yaml@refs/heads/main$" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com
             ```
+
+  distribute:
+    name: installers, Homebrew tap and Scoop bucket
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Azure login
+        uses: Azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ secrets.ZOORIK_CI_CLIENT_ID }}
+          tenant-id: ${{ secrets.ZOORIK_TENANT_ID }}
+          subscription-id: ${{ secrets.ZOORIK_SUBSCRIPTION_ID }}
+
+      - name: read the zoorik-ci key from Key Vault
+        id: key
+        env:
+          VAULT: ${{ secrets.ZOORIK_KEY_VAULT }}
+        run: |
+          set -euo pipefail
+          if ! key="$(az keyvault secret show --vault-name "$VAULT" --name zoorik-ci-private-key --query value -o tsv)" || [ -z "$key" ]; then
+            echo "::error title=zoorik-ci key missing::the Key Vault secret zoorik-ci-private-key is empty or unreadable."
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<< "$key"
+          delimiter="ZOORIK_CI_KEY_$(openssl rand -hex 16)"
+          {
+            echo "pem<<${delimiter}"
+            printf '%s\n' "$key"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: mint the release token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23li2Maf5ZrfRAzK7n
+          private-key: ${{ steps.key.outputs.pem }}
+          owner: getzoorik
+          repositories: |
+            zoorikctl
+            homebrew-tap
+            scoop-bucket
+
+      - name: fetch the Homebrew formula and the Scoop manifest from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --pattern zoorikctl.rb --pattern zoorikctl.json --dir staging/packaging
 
       - name: publish the installers behind get.zoorik.com
         env:

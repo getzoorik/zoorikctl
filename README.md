@@ -52,8 +52,8 @@ zoorikctl cluster connect --connect-token=<token> --api-region=us
 | `zoorikctl cluster disconnect` | Undoes what Zoorik changed and removes the install. |
 | `zoorikctl version` | Prints the version. |
 
-Every command acts on your kubeconfig's current context, or on `--kube-context`, and prints that
-context first. `--dry-run` prints the full plan, with every command it would run, and changes nothing.
+Every command acts on your kubeconfig's current context, or on `--kube-context` (or `--context`, as
+in kubectl), and prints that context first. `--dry-run` prints the full plan, with every command it would run, and changes nothing.
 Every change is printed before it is made, and nothing in your cloud account changes until you say yes
 (or pass `--yes`). Run `zoorikctl --help` for every flag and exit code.
 
@@ -141,7 +141,9 @@ The repository is laid out like this:
   Each release copies `install/` over them, so please do not edit them by hand;
 - `packaging/`: the Homebrew formula and Scoop manifest each release renders into
   [getzoorik/homebrew-tap](https://github.com/getzoorik/homebrew-tap) and
-  [getzoorik/scoop-bucket](https://github.com/getzoorik/scoop-bucket).
+  [getzoorik/scoop-bucket](https://github.com/getzoorik/scoop-bucket);
+- `.krew.yaml`: the [Krew](https://krew.sigs.k8s.io) plugin manifest for `kubectl zoorik`, rendered
+  for each release into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index).
 
 ## Security
 
