@@ -18,23 +18,23 @@ jobs:
   agent:
     if: >-
       (github.event_name == 'issue_comment' &&
-        contains(github.event.comment.body, '@aos-app') &&
+        contains(github.event.comment.body, '@zoorikapp') &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association) &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.issue.author_association)) ||
       (github.event_name == 'pull_request_review_comment' &&
-        contains(github.event.comment.body, '@aos-app') &&
+        contains(github.event.comment.body, '@zoorikapp') &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association) &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'pull_request_review' &&
-        contains(github.event.review.body, '@aos-app') &&
+        contains(github.event.review.body, '@zoorikapp') &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.review.author_association) &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association) &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issues' &&
-        (contains(github.event.issue.body, '@aos-app') || contains(github.event.issue.title, '@aos-app')) &&
+        (contains(github.event.issue.body, '@zoorikapp') || contains(github.event.issue.title, '@zoorikapp')) &&
         contains(fromJSON('["OWNER","MEMBER"]'), github.event.issue.author_association))
-    uses: getzoorik/.github/.github/workflows/aos.yaml@95fef90b097e091163128ed8d83384123eb9cdd4
+    uses: getzoorik/.github/.github/workflows/aos.yaml@cf48b5cb880794b584639c037ae120c27c00d4dc
     with:
       agent: be/coral/zoorikctl
     secrets:
