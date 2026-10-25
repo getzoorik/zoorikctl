@@ -5,12 +5,14 @@ metadata:
 spec:
   version: {{ .TagName }}
   homepage: https://github.com/getzoorik/zoorikctl
-  shortDescription: Connect a cluster to Zoorik Kubernetes optimization
+  shortDescription: Connect a cluster to Zoorik Coral
   description: |
-    Connects a Kubernetes cluster to Zoorik Coral, Zoorik's Kubernetes
-    optimization. It prepares the cluster, installs the Zoorik agent, lets
-    Zoorik remove machines it has emptied if you agree, and takes everything
-    out again on disconnect. Every change is printed before it is made.
+    Zoorik Coral reduces the cost of AKS and EKS clusters. It sizes pod CPU
+    and memory requests from their real use and rebalances workloads onto
+    fewer, cheaper nodes, autonomously and without downtime. This plugin
+    prepares a cluster for Coral and connects it with a one-time token from
+    the Coral console, so it needs a Zoorik account. Every change is printed
+    before it is made, and disconnect removes what Zoorik added.
   platforms:
   - selector:
       matchLabels:
