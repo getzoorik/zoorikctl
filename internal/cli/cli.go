@@ -490,9 +490,10 @@ VM CONNECT
 
   --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Without it,
                      ZOORIK_CONNECT_TOKEN. One of them is required.
-  --api-region       Which control plane to ask. Default "us".
-  --api-url          The Amoeba control plane's address, instead of --api-region. No console link
-                     is printed.
+  --api-region       Which control plane to ask. Default "us", at https://app.zoorik.com/amoeba.
+  --api-url          Zoorik Amoeba's address, instead of --api-region, as the Connect a VM dialog
+                     prints it: for example https://app.zoorik.com/amoeba. The console link printed
+                     at the end is this address followed by /overview.
   --yes, -y          Make the cloud changes without asking. With no terminal and no --yes, the VM
                      connects without them.
   --dry-run          Check the VM, fetch the setup, print the plan and the block of commands, and

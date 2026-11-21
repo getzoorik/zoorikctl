@@ -8,18 +8,17 @@ import (
 	"github.com/getzoorik/zoorikctl/internal/refusal"
 )
 
-const amoebaAgentPath = "/api/agent"
+const AmoebaAgentPath = "/api/agent"
 
 type region struct {
-	api           string
-	console       string
-	amoebaAPI     string
-	amoebaConsole string
+	api     string
+	console string
+	amoeba  string
 }
 
 var regions = map[string]region{
 	"us": {api: "https://dev.zoorik.com/coral", console: "https://dev.zoorik.com/coral",
-		amoebaAPI: "https://app.zoorik.com/amoeba", amoebaConsole: "https://app.zoorik.com/amoeba"},
+		amoeba: "https://app.zoorik.com/amoeba"},
 }
 
 func ConsoleURL(name, override string) string {
@@ -27,13 +26,6 @@ func ConsoleURL(name, override string) string {
 		return ""
 	}
 	return regions[strings.ToLower(strings.TrimSpace(name))].console
-}
-
-func AmoebaConsoleURL(name, override string) string {
-	if strings.TrimSpace(override) != "" {
-		return ""
-	}
-	return regions[strings.ToLower(strings.TrimSpace(name))].amoebaConsole
 }
 
 func ResolveBaseURL(name, override string) (string, error) {
@@ -47,15 +39,15 @@ func ResolveBaseURL(name, override string) (string, error) {
 	return served.api, nil
 }
 
-func ResolveAmoebaBaseURL(name, override string) (string, error) {
-	if override != "" {
-		return strings.TrimRight(override, "/") + amoebaAgentPath, nil
+func ResolveAmoebaURL(name, override string) (string, error) {
+	if override = strings.TrimSpace(override); override != "" {
+		return strings.TrimRight(override, "/"), nil
 	}
 	served, err := lookup(name)
 	if err != nil {
 		return "", err
 	}
-	return served.amoebaAPI + amoebaAgentPath, nil
+	return served.amoeba, nil
 }
 
 func lookup(name string) (region, error) {

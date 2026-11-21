@@ -96,17 +96,15 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 
 	out := s.out
 	out.Banner("Zoorik VM Connect")
-	baseURL, err := api.ResolveAmoebaBaseURL(options.APIRegion, options.APIURL)
+	amoeba, err := api.ResolveAmoebaURL(options.APIRegion, options.APIURL)
 	if err != nil {
 		return err
 	}
 	out.Section("Configuration")
-	region := options.APIRegion
-	if strings.TrimSpace(options.APIURL) != "" {
-		region = "custom (--api-url)"
+	if strings.TrimSpace(options.APIURL) == "" {
+		out.Field("Zoorik Region", options.APIRegion)
 	}
-	out.Field("Zoorik Region", region)
-	out.Field("Control plane", baseURL)
+	out.Field("Control plane", amoeba)
 
 	out.Section("Preflight Checks")
 	spinner := out.Spin("Reading this VM from its cloud's metadata service...")
@@ -119,7 +117,7 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 
 	out.Section("API Verification")
 	spinner = out.Spin("Verifying the connect token...")
-	client := api.New(baseURL, options.ConnectToken)
+	client := api.New(amoeba+api.AmoebaAgentPath, options.ConnectToken)
 	setup, err := client.FetchVMSetup(ctx)
 	if err != nil {
 		spinner.Fail("Connect token could not be verified")
@@ -189,10 +187,7 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 	}
 	spinner.Success("The agent reported")
 
-	var lines []ui.BoxLine
-	if console := api.AmoebaConsoleURL(options.APIRegion, options.APIURL); console != "" {
-		lines = append(lines, ui.BoxLine{Text: "Console: " + console + "/overview", Indent: 2})
-	}
+	lines := []ui.BoxLine{{Text: "Console: " + amoeba + "/overview", Indent: 2}}
 	switch {
 	case status.Access == accessGranted:
 		out.SuccessBox("Connected: "+machine.Name, lines)
