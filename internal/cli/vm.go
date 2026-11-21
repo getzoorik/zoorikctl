@@ -128,9 +128,7 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 	printMachine(out, machine)
 
 	out.Section("Data Disk Access")
-	spinner = out.Spin("Reading what Zoorik may already do with this VM's data disks...")
-	grant := planVMGrant(ctx, &cloud.Runner{As: vm.CLIUser()}, machine, setup)
-	spinner.Stop()
+	grant := planVMGrant(ctx, out, machine, setup)
 	if err := settleVMGrantPlan(ctx, out, machine, setup, &grant); err != nil {
 		return err
 	}
@@ -169,7 +167,7 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 				return ctx.Err()
 			}
 			printVMBlock(out, grant)
-			return vmGrantFailed(err, grant)
+			return vmGrantFailed(err)
 		}
 		grant.applied = true
 	}
@@ -202,11 +200,14 @@ func runVMConnect(ctx context.Context, args []string, s *session) error {
 	out.WarnBox("Connected: "+machine.Name, lines)
 	return &declined{
 		title: "This VM reads Waiting for permission until those commands run.",
-		next:  "Run the commands above in " + grant.shell() + ", or give them to someone who may make these changes.",
+		next:  "Its metrics are collected meanwhile, and no migration starts until Zoorik has that access.",
 	}
 }
 
-func planVMGrant(ctx context.Context, runner *cloud.Runner, machine *vm.Machine, setup *api.VMSetup) vmGrant {
+func planVMGrant(ctx context.Context, out *ui.Printer, machine *vm.Machine, setup *api.VMSetup) vmGrant {
+	runner := &cloud.Runner{As: vm.CLIUser(), OnRun: func(command cloud.Command) { out.Log("  $ " + command.String()) }}
+	spinner := out.Spin("Reading what Zoorik may already do with this VM's data disks...")
+	defer spinner.Stop()
 	if machine.Cloud == kube.CloudAzure {
 		azure := cloud.AzureVM{Subscription: machine.Subscription, ResourceGroup: machine.ResourceGroup,
 			Name: machine.Name, ID: machine.ResourceID, DataDisks: machine.DataDisks}
@@ -379,14 +380,15 @@ func vmStatusLine(status *api.VMConnectStatus) string {
 		", access " + strings.ToLower(text.OrText(status.Access, "unknown"))
 }
 
-func vmGrantFailed(err error, grant vmGrant) error {
+func vmGrantFailed(err error) error {
 	var failed *refusal.Refusal
 	if !errors.As(err, &failed) {
 		return err
 	}
 	return refusal.Wrap(failed.Code, failed.Cause, failed.What,
-		"The agent is installed. Run the commands above in "+grant.shell()+", or give them to someone who may "+
-			"make these changes; they are safe to run more than once.").WithDetail(failed.Detail...)
+		"The agent is installed, and every step already done stays done. Run the commands above, or run the "+
+			"two lines from a new Connect a VM dialog once your sign-in may make these changes.").
+		WithDetail(failed.Detail...)
 }
 
 func vmReported(err error) error {
