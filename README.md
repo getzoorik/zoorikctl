@@ -48,7 +48,7 @@ zoorikctl cluster connect --connect-token=<token> --api-region=us
 To connect a VM, run the two lines from the console's Connect a VM dialog on the VM itself:
 
 ```sh
-curl -fsSL https://get.zoorik.com/linux | sh
+curl -fsSL https://get.zoorik.com/linux | sudo sh
 ZOORIK_CONNECT_TOKEN="<token>" zoorikctl vm connect --api-url="https://app.zoorik.com/amoeba"
 ```
 
