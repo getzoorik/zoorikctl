@@ -69,6 +69,8 @@ func run(ctx context.Context, args []string, s *session) error {
 	switch args[0] {
 	case "cluster":
 		return runCluster(ctx, args[1:], s)
+	case "vm":
+		return runVM(ctx, args[1:], s)
 	case "version", "--version", "-v":
 		return runVersion(s.streams)
 	case "help", "--help", "-h":
@@ -142,7 +144,7 @@ func usageError(command, message string) error {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `zoorikctl — prepare a Kubernetes cluster for Zoorik, connect it, grant node deletion, or disconnect it.
+	fmt.Fprint(w, `zoorikctl — connect your Kubernetes clusters (Coral) and VMs (Amoeba) to Zoorik, prepare a cluster, grant node deletion, or disconnect a cluster.
 
 USAGE
   zoorikctl cluster prepare [--kube-context=<context>] [--cluster-resource-id=<arm-id|eks-arn>]
@@ -155,9 +157,11 @@ USAGE
   zoorikctl cluster disconnect [--kube-context=<context>] [--yes] [--dry-run]
   zoorikctl cluster grant-node-deletion [--kube-context=<context>] [--cluster-resource-id=<arm-id|eks-arn>]
                                         [--dry-run] [--yes]
+  zoorikctl vm connect [--connect-token=<connect-token>] [--api-region=us | --api-url=<url>]
+                       [--yes] [--dry-run]
   zoorikctl version
 
-  Every command acts on your kubeconfig's current context, as kubectl and helm do, or on the one
+  Every cluster command acts on your kubeconfig's current context, as kubectl and helm do, or on the one
   --kube-context (or --context) names, and prints that context, its cluster, API server and
   kubeconfig first. Installed as a kubectl plugin, each command also runs as kubectl zoorik, for
   example kubectl zoorik cluster connect.
@@ -430,6 +434,84 @@ GRANT-NODE-DELETION
   --dry-run          Read the cluster and the cloud, print the plan with every command, and exit.
   --yes, -y          Make the changes without asking. With no terminal they are made only with --yes.
 
+VM CONNECT
+  Connects the Linux VM it runs on to Zoorik Amoeba. Run it on the VM itself, as yourself, for
+  example over SSH. The console's Connect a VM dialog prints two lines: the zoorikctl install, and
+  this command with the connect token in ZOORIK_CONNECT_TOKEN, since any user of the VM can read a
+  command line but not another user's environment. In order it:
+    1. checks, changing nothing, that this is an Azure VM or an AWS EC2 instance running Linux with
+       systemd and at least one data disk, and on AWS that its EBS volumes are NVMe devices (an
+       instance type built on the Nitro System). Anything else stops here, with exit code 11;
+    2. fetches the setup the connect token was opened for, without spending the token, and names
+       the organisation the VM connects to;
+    3. reads, with your own az or aws sign-in, what Zoorik may already do with this VM's data
+       disks, prints each missing change with its exact command, and asks "Let Zoorik change this
+       VM's data disks, with <sign-in>? [Y/n]"; Enter answers yes;
+    4. runs sudo -v, so that a refused sudo stops the run before the connect token is spent;
+    5. registers the VM with the identity document its cloud signs for it, which spends the
+       connect token. Run again on the same VM, it reconnects the VM with a new agent key;
+    6. writes the agent's key and settings to /etc/amoeba-agent.env (mode 0600, owner root), then
+       runs the agent's install script as root: Java 17 if it is missing; the agent and its
+       systemd service amoeba-agent, which systemd restarts whenever it stops; the timer
+       amoeba-agent-watchdog, which restarts the agent when it has not reported for 5 minutes; a
+       health check; and a rollback to the previous version if the new one does not start;
+    7. makes the changes you agreed to, and checks that each one is in place;
+    8. waits up to 3 minutes for the agent's first report and for Zoorik to confirm its access,
+       then prints the VM's name and the console link.
+  sudo is used only to write that file and run the install script. Started as root with sudo, it
+  runs az and aws as the user who ran sudo, so they use that user's sign-in. Afterwards the agent
+  upgrades itself to each Zoorik release with the same install script, health check and rollback.
+  An image made from a connected VM carries its agent: on a VM created from that image, the agent
+  refuses to start until zoorikctl vm connect runs there.
+
+  What Zoorik is granted, and only after you agree:
+    Azure  Zoorik's app is added to your Microsoft Entra directory, the first time only. Two custom
+           roles are defined in the VM's subscription: "Zoorik Amoeba VM Disks v1 <subscription>"
+           (read the resource group and its VMs, attach and detach their data disks, create,
+           resize, snapshot and delete disks and snapshots, and read disk encryption sets) and
+           "Zoorik Amoeba Catalog Reader v1 <subscription>" (read VM sizes, disk SKUs and region
+           names, and query resources, with results limited to what Zoorik may read). The VM's
+           resource group is tagged zoorik-amoeba-org=<organisation>, which binds the group to your
+           organisation. The disk role is assigned to Zoorik's app on that resource group, and on
+           each disk encryption set in another group that the VM's data disks use; the catalog role
+           on the subscription. One assignment covers every VM in the group. A data disk in another
+           resource group is outside the grant, and Amoeba leaves it alone. Making these changes
+           takes Owner on the subscription, or User Access Administrator on it with Tag
+           Contributor on the group, and, the first time, an Entra role that may add apps.
+    AWS    The IAM role ZoorikAmoeba-<instance-id>, which only Zoorik's AWS account may assume, and
+           only with your organisation's id as the ExternalId. Its inline policy
+           ZoorikAmoebaVmDisks lets Zoorik list the account's instances, volumes and snapshots
+           (IAM cannot narrow EC2's describe calls), attach and detach volumes on this instance,
+           and create, change, snapshot and delete only the volumes and snapshots tagged
+           zoorik-amoeba-vm=<instance-id>. The instance's data volumes get that tag; the root
+           volume never does. A volume attached later is outside the grant until a rerun tags it.
+  Each change is checked first, so running it again changes nothing that is in place. If az or aws
+  is missing, is not signed in or cannot see the VM's subscription or account, if you answer no,
+  or if there is no terminal and no --yes, the VM still connects, and zoorikctl prints the same
+  changes as one block of commands to paste into Azure Cloud Shell or AWS CloudShell, or to give
+  to someone who may make them. Until they run, the console shows the VM as Waiting for
+  permission: its metrics are collected, and no migration starts.
+
+  --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Without it,
+                     ZOORIK_CONNECT_TOKEN. One of them is required.
+  --api-region       Which control plane to ask. Default "us", at https://lab.zoorik.com/amoeba.
+  --api-url          Zoorik Amoeba's address, instead of --api-region, as the Connect a VM dialog
+                     prints it: for example https://lab.zoorik.com/amoeba. The console link printed
+                     at the end is this address followed by /overview.
+  --yes, -y          Make the cloud changes without asking. With no terminal and no --yes, the VM
+                     connects without them.
+  --dry-run          Check the VM, fetch the setup, print the plan and the block of commands, and
+                     exit. Nothing is changed, sudo is not used, and the connect token is not spent.
+
+  Exit codes: 0 connected, or connected while the cloud still applies the access; 3 the connect
+  token is spent, expired or cut short; 4 the control plane could not be reached, could not prove
+  this VM's identity, or is running a migration step on it; 6 sudo was refused, or your sign-in
+  may not make a change (the block is printed); 7 the VM or its resource group belongs to another
+  organisation; 8 a cloud change failed (the block is printed), or an existing role of Zoorik's
+  name allows something else; 9 the install script failed, or the agent's first report was not seen
+  within 3 minutes; 10 connected without the cloud changes (the block is printed); 11 the checks of
+  step 1.
+
 EXIT CODES
   0 connected   2 usage        3 credential     4 control plane   5 kubeconfig
   6 permission  7 wrong cluster
@@ -438,6 +520,7 @@ EXIT CODES
   10 cloud changes not agreed to: the question was declined, or with no terminal --yes was not given
                 (7 also refuses Kubernetes older than 1.30, a cluster whose nodes are all neither
                 amd64 nor arm64, and a --cluster-resource-id that names another cluster)
+  11 not supported: vm connect runs only on an Azure or AWS Linux VM with systemd and a data disk
 
 `)
 }

@@ -6,7 +6,8 @@
 
 `zoorikctl` connects a Kubernetes cluster to [Zoorik Coral](https://zoorik.com/coral), Zoorik's
 Kubernetes optimization. It prepares the cluster, installs the Zoorik agent, lets Zoorik remove spare
-machines if you agree, and takes everything out again on disconnect. It is open source, so you can read
+machines if you agree, and takes everything out again on disconnect. It also connects a Linux VM on
+Azure or AWS to Zoorik Amoeba, Zoorik's block storage optimization. It is open source, so you can read
 exactly what it does before you run it.
 
 ## Install
@@ -44,15 +45,23 @@ The Connect dialog in the Zoorik console prints the command to run, with a one-t
 zoorikctl cluster connect --connect-token=<token> --api-region=us
 ```
 
+To connect a VM, run the two lines from the console's Connect a VM dialog on the VM itself:
+
+```sh
+curl -fsSL https://get.zoorik.com/linux | sudo sh
+ZOORIK_CONNECT_TOKEN="<token>" zoorikctl vm connect --api-url="https://lab.zoorik.com/amoeba"
+```
+
 | Command | What it does |
 |---|---|
 | `zoorikctl cluster prepare` | Reads the cluster, says what adds its nodes, reports whether each node pool is ready for live migration, and sets up a node provisioner where the cluster has none. |
 | `zoorikctl cluster connect` | Installs the Zoorik agent with the install the connect token was opened for. |
 | `zoorikctl cluster grant-node-deletion` | Lets Zoorik remove machines it has emptied, and lower a node pool's minimum. |
 | `zoorikctl cluster disconnect` | Undoes what Zoorik changed and removes the install. |
+| `zoorikctl vm connect` | Connects the Linux VM it runs on to Zoorik Amoeba: installs the Amoeba agent and, if you agree, gives Zoorik access to the VM's data disks. |
 | `zoorikctl version` | Prints the version. |
 
-Every command acts on your kubeconfig's current context, or on `--kube-context` (or `--context`, as
+Every cluster command acts on your kubeconfig's current context, or on `--kube-context` (or `--context`, as
 in kubectl), and prints that context first. `--dry-run` prints the full plan, with every command it would run, and changes nothing.
 Every change is printed before it is made, and nothing in your cloud account changes until you say yes
 (or pass `--yes`). Run `zoorikctl --help` for every flag and exit code.
@@ -77,6 +86,15 @@ Every change is printed before it is made, and nothing in your cloud account cha
 it installs reports to Zoorik once it runs. On EKS, `prepare` also pulls the Karpenter Helm chart from
 `public.ecr.aws`.
 
+### On a VM
+
+`vm connect` registers the VM with the identity document its cloud signs for it, and with its name,
+size, region and OS. It writes the agent's key and settings to `/etc/amoeba-agent.env`, readable by
+root only, and runs the agent's install script from Zoorik as root. The script installs Java 17 if it
+is missing, the agent as the systemd service `amoeba-agent`, and the timer `amoeba-agent-watchdog`,
+which restarts the agent when it stops reporting. If a new version does not start, it rolls back to
+the previous one, and the agent upgrades itself the same way. `sudo` is used for nothing else.
+
 ### In your cloud account
 
 Cloud changes run through your own `az` or `aws` sign-in. `zoorikctl` never stores a cloud credential.
@@ -93,6 +111,16 @@ Cloud changes run through your own `az` or `aws` sign-in. `zoorikctl` never stor
   `zoorik-agent-<cluster>` with the custom role "Zoorik Node Removal v2" on this cluster only. On EKS:
   an IAM role `zoorik-agent-<cluster>` whose policy is limited to this cluster's node groups, bound
   with EKS Pod Identity.
+- **A VM's data disks** (`vm connect`, if you agree). On Azure: Zoorik's app joins your Microsoft Entra
+  directory, the first time only, with the custom role `Zoorik Amoeba VM Disks v1 <subscription>` on
+  the VM's resource group (and on the disk encryption sets its data disks use in other groups) and the
+  read-only role `Zoorik Amoeba Catalog Reader v1 <subscription>` on the subscription. The tag
+  `zoorik-amoeba-org` on the resource group binds the group to your organisation. On AWS: the IAM role
+  `ZoorikAmoeba-<instance-id>`, which Zoorik may assume only with your organisation's ExternalId and
+  which may change only the volumes and snapshots tagged `zoorik-amoeba-vm=<instance-id>`, and that
+  tag on the instance's data volumes. If `az` or `aws` is missing or not signed in, or you say no, the
+  VM still connects, and `vm connect` prints the same changes as commands to run in Azure Cloud Shell
+  or AWS CloudShell.
 
 Zoorik never creates a machine or raises a node pool's size. Before the agent lowers a minimum, it
 records yours in a tag, and `disconnect` puts it back, which may add machines up to it.

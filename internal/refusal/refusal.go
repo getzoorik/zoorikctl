@@ -24,6 +24,8 @@ const (
 	CodeAgentNotReady Code = 9
 
 	CodeNotConfirmed Code = 10
+
+	CodeNotSupported Code = 11
 )
 
 type Refusal struct {

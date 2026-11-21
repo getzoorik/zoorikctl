@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 const InstallSetupPath = "/install/v1/setup"
 
 const ConnectTokenPath = "/install/v1/connect-token"
+
+const RegisterPath = "/install/v1/register"
 
 const RequestIDHeader = "Zoorik-Request-Id"
 
@@ -110,7 +113,19 @@ func (c *Client) FetchConnectTokenStatus(ctx context.Context) (*ConnectTokenStat
 const maxResponseBytes = 8 << 20
 
 func (c *Client) get(ctx context.Context, path string) (int, []byte, http.Header, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	return c.do(ctx, http.MethodGet, path, nil)
+}
+
+func (c *Client) post(ctx context.Context, path string, payload []byte) (int, []byte, http.Header, error) {
+	return c.do(ctx, http.MethodPost, path, payload)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, payload []byte) (int, []byte, http.Header, error) {
+	var sent io.Reader
+	if payload != nil {
+		sent = bytes.NewReader(payload)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, sent)
 	if err != nil {
 		return 0, nil, nil, refusal.Wrap(refusal.CodeUsage, err,
 			fmt.Sprintf("%q is not a usable control plane address.", c.BaseURL),
@@ -119,6 +134,9 @@ func (c *Client) get(ctx context.Context, path string) (int, []byte, http.Header
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", UserAgent())
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 
 	response, err := c.HTTP.Do(request)
 	if err != nil {

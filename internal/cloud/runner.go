@@ -76,8 +76,11 @@ func NotFound(err error) bool {
 	return false
 }
 
+var cliEnv = []string{"AWS_PAGER=", "AZURE_CORE_ONLY_SHOW_ERRORS=true", "AZURE_CORE_NO_COLOR=true"}
+
 type Runner struct {
 	OnRun func(Command)
+	As    string
 }
 
 func (r *Runner) Available(name string) bool {
@@ -89,9 +92,14 @@ func (r *Runner) Output(ctx context.Context, command Command) ([]byte, error) {
 	if r.OnRun != nil {
 		r.OnRun(command)
 	}
-	process := exec.CommandContext(ctx, command.Name, command.Args...)
-	process.Env = append(os.Environ(), "AWS_PAGER=", "AZURE_CORE_ONLY_SHOW_ERRORS=true",
-		"AZURE_CORE_NO_COLOR=true")
+	name, args := command.Name, command.Args
+	if r.As != "" {
+		name = "sudo"
+		args = append(append([]string{"-u", r.As, "-H", "env"}, cliEnv...), command.Name)
+		args = append(args, command.Args...)
+	}
+	process := exec.CommandContext(ctx, name, args...)
+	process.Env = append(os.Environ(), cliEnv...)
 	var stdout, stderr bytes.Buffer
 	process.Stdout = &stdout
 	process.Stderr = &stderr
