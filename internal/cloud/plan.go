@@ -133,6 +133,18 @@ func (d NodeDeletion) KeepsEarlier() bool {
 	return len(pending) > 0
 }
 
+type VMDisks struct {
+	Plan
+	TaggedFor string
+}
+
+func (p VMDisks) Later() string {
+	if p.Cloud == kube.CloudAWS {
+		return vmGrantLaterAWS
+	}
+	return vmGrantLaterAzure
+}
+
 type Input struct {
 	Target   *kube.Target
 	Found    kube.Autoprovisioner

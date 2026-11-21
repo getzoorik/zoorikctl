@@ -70,6 +70,10 @@ type roleDefinition struct {
 }
 
 func (d roleDefinition) removesNodesOnly() bool {
+	return d.only(nodeRemovalActions)
+}
+
+func (d roleDefinition) only(allowed []string) bool {
 	var actions, others []string
 	for _, permission := range d.Permissions {
 		actions = append(actions, permission.Actions...)
@@ -77,7 +81,7 @@ func (d roleDefinition) removesNodesOnly() bool {
 		others = append(others, permission.DataActions...)
 		others = append(others, permission.NotDataActions...)
 	}
-	return len(others) == 0 && sameSet(actions, nodeRemovalActions)
+	return len(others) == 0 && sameSet(actions, allowed)
 }
 
 func (d roleDefinition) allows() string {
@@ -910,12 +914,17 @@ func customRoles(ctx context.Context, runner *Runner, subscription, role string)
 }
 
 func nodeRemovalRoleReady(ctx context.Context, runner *Runner, subscription string) (bool, error) {
-	definitions, err := nodeRemovalDefinitions(ctx, runner, subscription)
+	return customRoleReady(ctx, runner, subscription, nodeRemovalRole, nodeRemovalActions)
+}
+
+func customRoleReady(ctx context.Context, runner *Runner, subscription, role string, actions []string) (bool,
+	error) {
+	definitions, err := customRoles(ctx, runner, subscription, role)
 	if err != nil || len(definitions) == 0 {
 		return false, err
 	}
 	for _, definition := range definitions {
-		if !definition.removesNodesOnly() {
+		if !definition.only(actions) {
 			return false, nil
 		}
 	}
@@ -959,37 +968,46 @@ func nodeRemovalDefinedElsewhere(ctx context.Context, runner *Runner, subscripti
 }
 
 func blockForeignRole(plan *Plan, definition roleDefinition) bool {
-	if definition.removesNodesOnly() {
+	return blockCustomRole(plan, nodeRemovalRole, nodeRemovalActions, definition)
+}
+
+func blockCustomRole(plan *Plan, role string, actions []string, definition roleDefinition) bool {
+	if definition.only(actions) {
 		return false
 	}
 	scope := "/subscriptions/<subscription>"
 	if len(definition.AssignableScopes) > 0 {
 		scope = definition.AssignableScopes[0]
 	}
-	plan.block("A custom role named \""+nodeRemovalRole+"\" already exists ("+text.OrText(definition.ID, "id unknown")+
+	plan.block("A custom role named \""+role+"\" already exists ("+text.OrText(definition.ID, "id unknown")+
 		") and allows "+definition.allows()+", not exactly what zoorikctl defines, so zoorikctl will not assign it.",
 		"Check what it allows and where it is assigned (`az role definition list --custom-role-only true --name "+
-			kube.ShellWord(nodeRemovalRole)+" --scope "+scope+" -o json`). If it is an older or hand-made copy of "+
-			"Zoorik's role, set its actions to exactly "+strings.Join(nodeRemovalActions, ", ")+" with `az role "+
+			kube.ShellWord(role)+" --scope "+scope+" -o json`). If it is an older or hand-made copy of "+
+			"Zoorik's role, set its actions to exactly "+strings.Join(actions, ", ")+" with `az role "+
 			"definition update`, or delete it; then run this again. Nothing has been changed.")
 	return true
 }
 
 func roleAssignmentsOn(ctx context.Context, runner *Runner, cluster AzureCluster, role, principal string) (
 	[]string, error) {
-	definitions, err := customRoles(ctx, runner, cluster.Subscription, role)
+	return roleAssignmentsAt(ctx, runner, cluster.Subscription, cluster.ID(), role, principal)
+}
+
+func roleAssignmentsAt(ctx context.Context, runner *Runner, subscription, scope, role, principal string) (
+	[]string, error) {
+	definitions, err := customRoles(ctx, runner, subscription, role)
 	if err != nil || len(definitions) == 0 {
 		return nil, err
 	}
 	var assignments []roleAssignment
-	if err := runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", cluster.Subscription,
-		"--scope", cluster.ID(), "--role", role, "--fill-principal-name", "false", "-o", "json"),
+	if err := runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", subscription,
+		"--scope", scope, "--role", role, "--fill-principal-name", "false", "-o", "json"),
 		&assignments); err != nil {
 		return nil, err
 	}
 	var ids []string
 	for _, assignment := range assignments {
-		if !strings.EqualFold(assignment.Scope, cluster.ID()) {
+		if !strings.EqualFold(assignment.Scope, scope) {
 			continue
 		}
 		if principal == "" || strings.EqualFold(assignment.PrincipalID, principal) {
