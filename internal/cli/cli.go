@@ -451,14 +451,18 @@ VM CONNECT
     5. registers the VM with the identity document its cloud signs for it, which spends the
        connect token. Run again on the same VM, it reconnects the VM with a new agent key;
     6. writes the agent's key and settings to /etc/amoeba-agent.env (mode 0600, owner root), then
-       runs the agent's install script as root: Java 17 if it is missing, the agent and its
-       systemd service amoeba-agent, a health check, and a rollback to the previous version if the
-       new one does not start;
+       runs the agent's install script as root: Java 17 if it is missing; the agent and its
+       systemd service amoeba-agent, which systemd restarts whenever it stops; the timer
+       amoeba-agent-watchdog, which restarts the agent when it has not reported for 5 minutes; a
+       health check; and a rollback to the previous version if the new one does not start;
     7. makes the changes you agreed to, and checks that each one is in place;
     8. waits up to 3 minutes for the agent's first report and for Zoorik to confirm its access,
        then prints the VM's name and the console link.
   sudo is used only to write that file and run the install script. Started as root with sudo, it
-  runs az and aws as the user who ran sudo, so they use that user's sign-in.
+  runs az and aws as the user who ran sudo, so they use that user's sign-in. Afterwards the agent
+  upgrades itself to each Zoorik release with the same install script, health check and rollback.
+  An image made from a connected VM carries its agent: on a VM created from that image, the agent
+  refuses to start until zoorikctl vm connect runs there.
 
   What Zoorik is granted, and only after you agree:
     Azure  Zoorik's app is added to your Microsoft Entra directory, the first time only. Two custom
@@ -504,8 +508,9 @@ VM CONNECT
   this VM's identity, or is running a migration step on it; 6 sudo was refused, or your sign-in
   may not make a change (the block is printed); 7 the VM or its resource group belongs to another
   organisation; 8 a cloud change failed (the block is printed), or an existing role of Zoorik's
-  name allows something else; 9 the install script failed, or the agent did not report within 3
-  minutes; 10 connected without the cloud changes (the block is printed); 11 the checks of step 1.
+  name allows something else; 9 the install script failed, or the agent's first report was not seen
+  within 3 minutes; 10 connected without the cloud changes (the block is printed); 11 the checks of
+  step 1.
 
 EXIT CODES
   0 connected   2 usage        3 credential     4 control plane   5 kubeconfig
