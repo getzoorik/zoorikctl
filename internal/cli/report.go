@@ -38,7 +38,7 @@ type runLog struct {
 }
 
 func openRunLog(args []string) *runLog {
-	if len(args) < 2 || args[0] != "cluster" || args[1] != "connect" {
+	if len(args) < 2 || (args[0] != "cluster" && args[0] != "vm") || args[1] != "connect" {
 		return nil
 	}
 	file, err := os.CreateTemp("", "zoorikctl-*.log")
