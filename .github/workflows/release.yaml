@@ -233,8 +233,8 @@ jobs:
           VAULT: ${{ secrets.ZOORIK_KEY_VAULT }}
         run: |
           set -euo pipefail
-          if ! key="$(az keyvault secret show --vault-name "$VAULT" --name zoorik-ci-private-key --query value -o tsv)" || [ -z "$key" ]; then
-            echo "::error title=zoorik-ci key missing::the Key Vault secret zoorik-ci-private-key is empty or unreadable."
+          if ! key="$(az keyvault secret show --vault-name "$VAULT" --name zoorik-nonprod-ci-private-key --query value -o tsv)" || [ -z "$key" ]; then
+            echo "::error title=zoorik-ci key missing::the Key Vault secret zoorik-nonprod-ci-private-key is empty or unreadable."
             exit 1
           fi
           while IFS= read -r line; do
