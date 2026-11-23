@@ -82,6 +82,18 @@ func (h helmRelease) apply(ctx context.Context) error {
 	return err
 }
 
+func UninstallHelmRelease(target *kube.Target, name, namespace string) error {
+	installed := helmRelease{target: target, release: name, namespace: namespace}
+	config := new(action.Configuration)
+	if err := config.Init(installed.getter(cli.New()), namespace, helmDriver, func(string, ...any) {}); err != nil {
+		return err
+	}
+	uninstall := action.NewUninstall(config)
+	uninstall.IgnoreNotFound = true
+	_, err := uninstall.Run(name)
+	return err
+}
+
 func (h helmRelease) getter(settings *cli.EnvSettings) genericclioptions.RESTClientGetter {
 	flags := genericclioptions.NewConfigFlags(false)
 	*flags.KubeConfig = h.target.KubeconfigPath()

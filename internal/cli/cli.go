@@ -40,6 +40,12 @@ func Main(ctx context.Context, args []string, streams Streams) int {
 		return 0
 	}
 
+	var incomplete *unfinished
+	if errors.As(err, &incomplete) {
+		log.discard()
+		return int(incomplete.code)
+	}
+
 	var stopped *declined
 	if errors.As(err, &stopped) {
 		stopped.print(errs)

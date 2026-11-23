@@ -467,7 +467,11 @@ func printSetupPlan(out *ui.Printer, plan cloud.Plan) {
 	}
 	out.Blank()
 	out.Plain(fmt.Sprintf("  %d change(s) to make, with %s:", len(pending), plan.Credential))
-	for index, step := range pending {
+	printSteps(out, pending)
+}
+
+func printSteps(out *ui.Printer, steps []cloud.Step) {
+	for index, step := range steps {
 		out.Blank()
 		out.Info(fmt.Sprintf("%d. %s", index+1, step.Title))
 		out.Detail(step.Why)
