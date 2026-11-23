@@ -389,11 +389,12 @@ DISCONNECT
        on AKS), never above the pool's maximum now and never below its minimum now, which may add
        machines. Then it removes what zoorikctl created to grant node deletion. On AKS: the
        "Zoorik Node Removal v2" and "Zoorik Node Removal v1" assignments on the cluster, the
-       federated credential and the managed identity zoorik-agent-<cluster>, and the two roles,
-       unless something else is still assigned them or your sign-in may not delete them. On EKS:
-       the inline policy ZoorikNodeRemoval-<cluster>-<hash>, the pod identity association and the
-       IAM role zoorik-agent-<cluster>. An identity or role zoorikctl did not create keeps
-       everything else it holds;
+       federated credential and the managed identity zoorik-agent-<cluster>, only when zoorikctl
+       created that identity, and the two roles, unless something else is still assigned them or
+       your sign-in may not delete them. On EKS: the inline policy
+       ZoorikNodeRemoval-<cluster>-<hash>, and the pod identity association and the IAM role
+       zoorik-agent-<cluster>, only when zoorikctl created that role. An identity or role zoorikctl
+       did not create keeps everything else it holds;
     4. deletes the zoorik-agent-webhook MutatingWebhookConfiguration, so new pods start at their
        own sizes, and scales its Deployment to 0. Then it deletes the roles, bindings and admission
        policies labelled app.kubernetes.io/part-of=zoorik-agent, and the namespace zoorik-node;

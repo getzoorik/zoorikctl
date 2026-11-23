@@ -40,6 +40,10 @@ const (
 
 	clusterTag = "zoorik-cluster"
 
+	createdByTag = "zoorik-created-by"
+
+	createdByZoorikctl = "zoorikctl"
+
 	nodeRemovalRole = "Zoorik Node Removal v2"
 
 	legacyNodeRemovalRole = "Zoorik Node Removal v1"

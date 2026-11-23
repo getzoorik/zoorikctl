@@ -295,6 +295,9 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 	case !taggedFor(tagValue(found.Tags, clusterTag), cluster.ID()):
 		plan.note("Managed identity " + name + " is not tagged " + clusterTag + "=" + clusterTagValue(cluster.ID()) +
 			", so zoorikctl did not create it for this cluster; it is left alone.")
+	case tagValue(found.Tags, createdByTag) != createdByZoorikctl:
+		plan.note("Managed identity " + name + " is not tagged " + createdByTag + "=" + createdByZoorikctl + ", so it " +
+			"stays, without Zoorik's role: remove it where you made it.")
 	default:
 		plan.Found = append(plan.Found, "Managed identity "+name+" in "+group+", tagged "+clusterTag+"="+
 			clusterTagValue(cluster.ID()))
@@ -458,7 +461,7 @@ func ownIdentityRemoval(runner *Runner, cluster AzureCluster, name string, ident
 		{
 			Title: "Delete the managed identity " + name,
 			Why: "zoorikctl created it in " + group + " for this cluster, tagged " + clusterTag + "=" +
-				clusterTagValue(cluster.ID()) + ".",
+				clusterTagValue(cluster.ID()) + " and " + createdByTag + "=" + createdByZoorikctl + ".",
 			Commands: []string{identityDelete.String()},
 			Check:    identityGone,
 			Apply: func(ctx context.Context, note func(string)) error {
@@ -626,7 +629,7 @@ func identityStep(runner *Runner, cluster AzureCluster, chosen azureIdentity, lo
 	tag := clusterTagValue(cluster.ID())
 	create := Cmd(azureCLI, "identity", "create", "--subscription", cluster.Subscription, "--resource-group",
 		chosen.ResourceGroup, "--name", chosen.Name, "--location", location, "--tags", clusterTag+"="+tag,
-		"-o", "none")
+		createdByTag+"="+createdByZoorikctl, "-o", "none")
 	exists := func(ctx context.Context) (bool, error) {
 		err := runner.Run(ctx, identityShow)
 		if NotFound(err) {
