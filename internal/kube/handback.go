@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,13 +116,46 @@ type rolloutMarker struct {
 	BaseReplicas int    `json:"baseReplicas"`
 	key          string
 	raw          string
+	rows         []handoverRow
 }
 
-type handoverSurge struct {
+func (m rolloutMarker) surge() surgeKey {
+	return surgeKey{namespace: m.Namespace, kind: m.Kind, name: m.Name, base: m.BaseReplicas}
+}
+
+type surgeKey struct {
 	namespace string
 	kind      string
 	name      string
 	base      int
+}
+
+type handoverSurge struct {
+	surgeKey
+	rows []handoverRow
+}
+
+type actionRequest struct {
+	resource  schema.GroupVersionResource
+	namespace string
+	name      string
+	dropped   []int
+}
+
+type handoverRow struct {
+	request *actionRequest
+	index   int
+	value   map[string]any
+}
+
+func (r handoverRow) path() string {
+	index := r.index
+	for _, dropped := range r.request.dropped {
+		if dropped < r.index {
+			index--
+		}
+	}
+	return pointer("status", "handover", "pods", strconv.Itoa(index))
 }
 
 type restoreClaim struct {
@@ -170,7 +204,7 @@ func (p *ReleasePlan) readAutoscalers(ctx context.Context, target *Target) error
 		return err
 	}
 
-	recommendations, err := customResources(ctx, target, RecommendationCRD, recommendationResourcePlural,
+	_, recommendations, err := customResources(ctx, target, RecommendationCRD, recommendationResourcePlural,
 		metav1.NamespaceAll)
 	if err != nil {
 		return err
@@ -214,12 +248,12 @@ func (p *ReleasePlan) readMarks(ctx context.Context, target *Target) error {
 		return err
 	}
 
-	requests, err := customResources(ctx, target, ActionRequestCRD, actionRequestResourcePlural,
+	resource, requests, err := customResources(ctx, target, ActionRequestCRD, actionRequestResourcePlural,
 		metav1.NamespaceAll)
 	if err != nil {
 		return err
 	}
-	p.surges = handoverSurges(requests, p.markers)
+	p.readSurges(resource, requests)
 
 	for _, kind := range []string{kindDeployment, kindStatefulSet} {
 		list, err := target.Dynamic.Resource(workloadResources[kind]).Namespace(metav1.NamespaceAll).List(ctx,
@@ -237,29 +271,38 @@ func (p *ReleasePlan) readMarks(ctx context.Context, target *Target) error {
 	return nil
 }
 
-func handoverSurges(requests []unstructured.Unstructured, markers []rolloutMarker) []handoverSurge {
-	seen := map[handoverSurge]bool{}
-	for _, marker := range markers {
-		seen[handoverSurge{namespace: marker.Namespace, kind: marker.Kind, name: marker.Name,
-			base: marker.BaseReplicas}] = true
+func (p *ReleasePlan) readSurges(resource schema.GroupVersionResource, requests []unstructured.Unstructured) {
+	markerAt, surgeAt := map[surgeKey]int{}, map[surgeKey]int{}
+	for index, marker := range p.markers {
+		markerAt[marker.surge()] = index
 	}
-	var surges []handoverSurge
-	for _, request := range requests {
-		rows, _, _ := unstructured.NestedSlice(request.Object, "status", "handover", "pods")
-		for _, raw := range rows {
-			row, _ := raw.(map[string]any)
-			surge, held := surgeOf(row)
-			if held && !seen[surge] {
-				seen[surge] = true
-				surges = append(surges, surge)
+	for _, item := range requests {
+		request := &actionRequest{resource: resource, namespace: item.GetNamespace(), name: item.GetName()}
+		rows, _, _ := unstructured.NestedSlice(item.Object, "status", "handover", "pods")
+		for index, raw := range rows {
+			value, _ := raw.(map[string]any)
+			key, held := surgeOf(value)
+			if !held {
+				continue
 			}
+			row := handoverRow{request: request, index: index, value: value}
+			if at, marked := markerAt[key]; marked {
+				p.markers[at].rows = append(p.markers[at].rows, row)
+				continue
+			}
+			at, seen := surgeAt[key]
+			if !seen {
+				at = len(p.surges)
+				surgeAt[key] = at
+				p.surges = append(p.surges, handoverSurge{surgeKey: key})
+			}
+			p.surges[at].rows = append(p.surges[at].rows, row)
 		}
 	}
-	return surges
 }
 
-func surgeOf(row map[string]any) (handoverSurge, bool) {
-	var surge handoverSurge
+func surgeOf(row map[string]any) (surgeKey, bool) {
+	var surge surgeKey
 	surge.namespace, _, _ = unstructured.NestedString(row, "namespace")
 	surge.kind, _, _ = unstructured.NestedString(row, "workloadKind")
 	surge.name, _, _ = unstructured.NestedString(row, "workloadName")
@@ -372,12 +415,18 @@ func (p *ReleasePlan) HandBack(ctx context.Context, target *Target, report func(
 		if _, err := outcomeOf(err); err != nil {
 			return err
 		}
+		if err := dropRows(ctx, target, marker.rows); err != nil {
+			return err
+		}
 		report(ReleaseItem{Step: releaseStepMarker, Kind: marker.Kind, Namespace: marker.Namespace,
 			Name: marker.Name, Detail: detail, Left: left})
 	}
 	for _, surge := range p.surges {
 		detail, left, err := scaleBack(ctx, target, surge.namespace, surge.kind, surge.name, surge.base)
 		if err != nil {
+			return err
+		}
+		if err := dropRows(ctx, target, surge.rows); err != nil {
 			return err
 		}
 		report(ReleaseItem{Step: releaseStepSurge, Kind: surge.kind, Namespace: surge.namespace, Name: surge.name,
@@ -404,6 +453,32 @@ func (p *ReleasePlan) HandBack(ctx context.Context, target *Target, report func(
 		}
 		report(settled(ReleaseItem{Step: releaseStepRestoreClaim, Kind: claim.kind, Namespace: claim.namespace,
 			Name: claim.name}, outcome, "Zoorik's restore-claim note removed"))
+	}
+	return nil
+}
+
+func dropRows(ctx context.Context, target *Target, rows []handoverRow) error {
+	pending := slices.SortedFunc(slices.Values(rows), func(a, b handoverRow) int { return b.index - a.index })
+	for len(pending) > 0 {
+		request := pending[0].request
+		var patch jsonPatch
+		var dropped []int
+		for _, row := range pending {
+			if row.request == request {
+				patch.drop(row.path(), row.value)
+				dropped = append(dropped, row.index)
+			}
+		}
+		pending = slices.DeleteFunc(pending, func(row handoverRow) bool { return row.request == request })
+		_, err := target.Dynamic.Resource(request.resource).Namespace(request.namespace).Patch(ctx, request.name,
+			types.JSONPatchType, patch.body(), jsonPatchOptions, "status")
+		outcome, err := outcomeOf(err)
+		if err != nil {
+			return err
+		}
+		if outcome == patchApplied {
+			request.dropped = append(request.dropped, dropped...)
+		}
 	}
 	return nil
 }

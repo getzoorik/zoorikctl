@@ -522,19 +522,19 @@ func nodeSuffix(name string) string {
 }
 
 func customResources(ctx context.Context, target *Target, crd, plural, namespace string) (
-	[]unstructured.Unstructured, error) {
+	schema.GroupVersionResource, []unstructured.Unstructured, error) {
 	resource, ok, err := servedResource(ctx, target, crd, plural)
 	if err != nil || !ok {
-		return nil, err
+		return resource, nil, err
 	}
 	list, err := target.Dynamic.Resource(resource).Namespace(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if absentAPI(err) {
-			return nil, nil
+			return resource, nil, nil
 		}
-		return nil, err
+		return resource, nil, err
 	}
-	return list.Items, nil
+	return resource, list.Items, nil
 }
 
 func servedResource(ctx context.Context, target *Target, crd, plural string) (
