@@ -127,11 +127,15 @@ records yours in a tag, and `disconnect` puts it back, which may add machines up
 
 ### On disconnect
 
-`disconnect` needs only your credentials and works whether or not the agent still runs. It removes
-the webhook, roles, policies and namespaces, removes Zoorik's taints and annotations from the nodes,
-hands back the autoscalers Zoorik took over, and deletes the resource definitions. It then offers to
-undo the cloud changes `zoorikctl` made for node removal, lowered minimums included. A disconnect that
-stops part-way picks up where it left off when you run it again.
+`disconnect` needs only your credentials and works whether or not the agent still runs. It reads
+everything first, and asks one question only when `zoorikctl` left something in the cloud. It stops
+the agent and tells Zoorik that the cluster leaves the console. On a yes, it puts back the node pool
+minimums Zoorik lowered and removes the access `zoorikctl` granted in the cloud. It removes the
+webhook, roles and policies, and hands back what Zoorik changed on your autoscalers, workloads and
+nodes, each field only if it is still as Zoorik left it. It moves your apps off Zoorik's own
+NodePools onto your machines, then empties and deletes those pools; a pod that cannot move holds its
+pool, and the run names it. Last, it deletes the resource definitions, the Helm release and the
+namespace. A disconnect that stops part-way picks up where it left off when you run it again.
 
 ## Build from source
 

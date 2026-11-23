@@ -374,48 +374,65 @@ CONNECT
                      commands that list them.
 
 DISCONNECT
-  Undoes what Zoorik changed on objects it does not own, then removes the install, and prints each
-  object as it goes. It needs only your credentials and works whether or not the agent still runs.
-  In order it: scales the zoorik-agent Deployment to 0 and waits for its pods to stop; deletes the
-  zoorik-agent-webhook MutatingWebhookConfiguration, so no pod is mutated or held up by it; deletes
-  the ClusterRoles, ClusterRoleBindings, Roles and RoleBindings labelled
-  app.kubernetes.io/part-of=zoorik-agent, then its ValidatingAdmissionPolicyBindings and policies,
-  before any namespace goes, so no policy is left waiting for a parameter that is gone; removes
-  the live-migration daemon's namespace zoorik-node, if it is there; removes every
-  coral.zoorik.com/ taint, the Evictor's annotations and the live-migration readiness annotation
-  from the nodes; holds each HorizontalPodAutoscaler Zoorik created at its current replicas and
-  deletes it, restores each one Zoorik took over to its recorded bounds, and reverts each
-  conversion; restores each VerticalPodAutoscaler Zoorik took over to its recorded update policy,
-  leaving alone one whose mode someone else has since changed; scales back a workload left one replica above its base by an
-  interrupted rollout; deletes every Recommendation and ActionRequest and both resource definitions;
-  and deletes the zoorik-agent namespace. Running pods keep
-  their current resources. Every step can be run again: a disconnect that stops part-way resumes
-  when the same command is run again. Offboard the cluster in the console as well.
-  Last, it looks with your own az or aws sign-in for the cloud changes zoorikctl made to grant
-  node deletion on this cluster. First, each node pool minimum the agent lowered goes back to the
-  value in its tag coral.zoorik.com/original-min (coral.zoorik.com_original-min on AKS: an AKS
-  agent pool, an EKS managed node group, or an Auto Scaling group tagged for this cluster), never
-  above the pool's maximum now and never below the minimum it has now, and both coral.zoorik.com
-  tags are removed; a minimum put back may add machines up to it. Then the
-  objects it created, found by name and the zoorik-cluster tag: on AKS the "Zoorik Node Removal v2"
-  and "Zoorik Node Removal v1" assignments on the cluster, then the federated credential and the
-  managed identity zoorik-agent-<cluster>; on EKS the inline policy
-  ZoorikNodeRemoval-<cluster>-<hash>, also on a role the agent used that zoorikctl did not create,
-  then the pod identity association and the IAM role zoorik-agent-<cluster>. A cluster with no
-  node that names its cloud is looked up by the cluster resource or identity the agent's
-  configuration holds. It prints them and asks "Undo these <n> cloud change(s) zoorikctl made for
-  <cluster>, with <sign-in>? [y/N]"; --yes undoes them, and with no terminal and no --yes they are
-  left and their commands printed. An identity or role zoorikctl did not create keeps everything
-  else it holds, and the roles "Zoorik Node Removal v2" and "Zoorik Node Removal v1", workload
-  identity, the OIDC issuer and the Pod Identity Agent add-on stay. The node provisioner is the
-  cluster's own and stays.
+  Takes the cluster off Zoorik and hands back what Zoorik changed, with your own credentials,
+  whether or not the agent still runs. It first reads the cluster and the cloud, changing nothing,
+  and prints the plan. It asks one question, only when zoorikctl left something in the cloud:
+  "Remove Zoorik's access to <cluster> in the cloud and put back the node pool minimums it lowered,
+  with <sign-in>? [Y/n]", without "and put back ..." when no minimum was lowered. Enter answers
+  yes. When nothing of Zoorik's is left in the cluster or the cloud, it changes nothing. Otherwise,
+  in order, it:
+    1. scales the zoorik-agent Deployment to 0 and waits for its pods to stop;
+    2. tells Zoorik, with the agent's key, that the cluster leaves the console. Zoorik ends any
+       rebalancing run and revokes the cluster's keys;
+    3. on a yes, with your own az or aws sign-in: puts each node pool minimum the agent lowered
+       back to the value in its tag coral.zoorik.com/original-min (coral.zoorik.com_original-min
+       on AKS), never above the pool's maximum now and never below its minimum now, which may add
+       machines. Then it removes what zoorikctl created to grant node deletion. On AKS: the
+       "Zoorik Node Removal v2" and "Zoorik Node Removal v1" assignments on the cluster, the
+       federated credential and the managed identity zoorik-agent-<cluster>, and the two roles,
+       unless something else is still assigned them or your sign-in may not delete them. On EKS:
+       the inline policy ZoorikNodeRemoval-<cluster>-<hash>, the pod identity association and the
+       IAM role zoorik-agent-<cluster>. An identity or role zoorikctl did not create keeps
+       everything else it holds;
+    4. deletes the zoorik-agent-webhook MutatingWebhookConfiguration, so new pods start at their
+       own sizes, and scales its Deployment to 0. Then it deletes the roles, bindings and admission
+       policies labelled app.kubernetes.io/part-of=zoorik-agent, and the namespace zoorik-node;
+    5. hands back what Zoorik changed on your objects, each field only if it is still as Zoorik
+       left it: the bounds and metrics of HorizontalPodAutoscalers, the bounds of KEDA
+       ScaledObjects, the update mode of VerticalPodAutoscalers, a replica Zoorik added for a
+       rollout or a move, its notes on your workloads, and its taints, cordons, pins and notes on
+       your nodes. A HorizontalPodAutoscaler Zoorik created is held at its current replicas and
+       deleted;
+    6. moves your apps off Zoorik's NodePools (labelled coral.zoorik.com/owned-by=rebalancing). It
+       cordons their machines, restarts each Deployment whose every ready copy runs there, and
+       waits for the new copies to start on your machines, which your node provisioner adds. Then
+       it sets each pool to 0 machines, waits until its machines are gone and its apps run again,
+       and deletes it. The node class zoorik-base goes once no NodePool uses it;
+    7. deletes the Recommendation and ActionRequest definitions with their records;
+    8. uninstalls the agent's Helm release, if it has one, and deletes the zoorik-agent namespace.
+  A pod that cannot move holds its pool: one that no controller owns, one with hostPath data, or
+  one whose volume can attach only to its machine, unless it is annotated
+  cluster-autoscaler.kubernetes.io/safe-to-evict=true or coral.zoorik.com/disposable=true. Such a
+  pool is not emptied, and the run names each such pod.
+  When for 20 minutes no pod leaves Zoorik's machines and no moved app gets a copy running again,
+  the run stops and names what waits and why. Before emptying starts, it first lifts its own
+  cordon, so your apps keep serving there.
+  The zoorik-agent namespace stays while Zoorik could not be reached or the cloud changes are not
+  undone: it holds the key and the settings a rerun needs. Running the same command again resumes
+  where a run stopped.
+  These stay: the node provisioner and its pools, workload identity and the OIDC issuer on AKS,
+  the Pod Identity Agent on EKS, and the sizes and notes Zoorik set on pods that were not
+  restarted, until those pods are replaced.
 
   --kube-context     The kubeconfig context to disconnect. Without it, the current context.
-  --yes, -y          Undo the cloud changes zoorikctl made to grant node deletion, the lowered
-                     minimums included, without asking.
+  --yes, -y          Answer yes to the cloud question without asking.
   --kubeconfig       Use this kubeconfig file instead of the default resolution.
-  --dry-run          Read the cluster and list every object that would be released or removed, and
-                     the cloud changes it would offer to undo, and exit. Nothing is changed.
+  --dry-run          Read the cluster and the cloud, print the plan, and exit. Nothing is changed.
+
+  Exit codes: 0 disconnected, or nothing of Zoorik's was left; 4 Zoorik could not be reached or
+  was not told; 6 your credentials may not make a change; 8 the run stopped, the cloud could not
+  be read, or a cloud change failed; 10 the cloud question was answered no, or there was no
+  terminal and no --yes.
 
 GRANT-NODE-DELETION
   Asks connect's second question for a cluster that is already connected, with no connect token:
