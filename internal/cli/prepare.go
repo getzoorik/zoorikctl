@@ -430,6 +430,10 @@ func applySteps(ctx context.Context, out *ui.Printer, plan cloud.Plan, pending [
 			spinner.Fail(label + ": stopped")
 			return stepFailed(plan, pending, index, err)
 		}
+		if step.Kept != nil && step.Kept() != "" {
+			spinner.Warn(label + ": " + step.Kept())
+			continue
+		}
 		spinner.Tick(label + ": checking that it is in place...")
 		if err := requireInPlace(ctx, step); err != nil {
 			spinner.Fail(label + ": not in place")
