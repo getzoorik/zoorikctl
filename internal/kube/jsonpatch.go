@@ -2,10 +2,13 @@ package kube
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type writeOutcome int
@@ -19,6 +22,8 @@ const (
 var (
 	pointerEscape    = strings.NewReplacer("~", "~0", "/", "~1")
 	jsonPatchOptions = metav1.PatchOptions{FieldManager: FieldManager}
+	patchNotApplied  = apierrors.NewGenericServerResponse(http.StatusUnprocessableEntity, "", schema.GroupResource{},
+		"", "", 0, false).ErrStatus
 )
 
 type jsonPatch []map[string]any
@@ -66,13 +71,15 @@ func labelPath(key string) string {
 }
 
 func outcomeOf(err error) (writeOutcome, error) {
+	var refused *apierrors.StatusError
 	switch {
 	case err == nil:
 		return patchApplied, nil
-	case apierrors.IsInvalid(err):
-		return patchStale, nil
 	case apierrors.IsNotFound(err):
 		return patchGone, nil
+	case errors.As(err, &refused) && refused.ErrStatus.Reason == patchNotApplied.Reason &&
+		refused.ErrStatus.Message == patchNotApplied.Message:
+		return patchStale, nil
 	}
 	return patchApplied, err
 }
