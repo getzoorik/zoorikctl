@@ -900,11 +900,16 @@ func (c *stallClock) stalled(pods, ready, claims int) bool {
 	if c.seen && (pods < c.pods || ready > c.ready || claims < c.claims) {
 		c.since = now
 	}
+	switch {
+	case !c.seen:
+		c.ready = ready
+	case pods < c.pods:
+		c.ready = min(ready, c.ready-(c.pods-pods))
+	case ready > c.ready:
+		c.ready = ready
+	}
 	if !c.seen || pods < c.pods {
 		c.pods = pods
-	}
-	if !c.seen || ready > c.ready {
-		c.ready = ready
 	}
 	if !c.seen || claims < c.claims {
 		c.claims = claims
