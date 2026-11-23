@@ -176,9 +176,9 @@ func (p *ReleasePlan) readPools(ctx context.Context, target *Target) error {
 		}
 		p.rolls = scene.rolls()
 		for index := range pools {
+			pools[index].found = scene.appsOn(pools[index].name)
 			if !pools[index].emptied {
 				pools[index].holds = scene.holds(pools[index].name)
-				pools[index].found = scene.appsOn(pools[index].name)
 			}
 		}
 	}
@@ -593,9 +593,17 @@ func (p *ReleasePlan) MovePools(ctx context.Context, target *Target, report func
 	}
 
 	var coralNames []string
-	for _, pool := range p.pools {
+	for index, pool := range p.pools {
 		coralNames = append(coralNames, pool.name)
 		if pool.emptied {
+			if err := recordApps(ctx, target, &p.pools[index]); err != nil {
+				return liftAll(nil, err)
+			}
+			for _, node := range pool.nodes {
+				if err := dropPin(ctx, target, node); err != nil {
+					return liftAll(nil, err)
+				}
+			}
 			continue
 		}
 		own, err := cordonNodes(ctx, target, pool.nodes)
@@ -628,6 +636,9 @@ func (p *ReleasePlan) MovePools(ctx context.Context, target *Target, report func
 	for _, pool := range p.pools {
 		switch {
 		case pool.emptied:
+			if err := recordApps(ctx, target, &pool); err != nil {
+				return liftAll(stuck, err)
+			}
 			draining = append(draining, pool)
 		case len(pool.holds) > 0:
 			lifted, err := lift(pool.name)
@@ -642,7 +653,7 @@ func (p *ReleasePlan) MovePools(ctx context.Context, target *Target, report func
 			stuck = append(stuck, pool.stuck()...)
 		default:
 			pool.apps = unionApps(pool.apps, pool.found)
-			gone, err := emptyPool(ctx, target, pool)
+			gone, err := writePool(ctx, target, pool, true)
 			if err != nil {
 				return liftAll(stuck, err)
 			}
@@ -683,14 +694,22 @@ func cordonNodes(ctx context.Context, target *Target, nodes []corev1.Node) ([]st
 		case ownCordon(node):
 			own = append(own, node.Name)
 		}
-		if pins := pinDrop(node); len(pins) > 0 {
-			_, err := api.Patch(ctx, node.Name, types.JSONPatchType, pins.body(), jsonPatchOptions)
-			if _, err := outcomeOf(err); err != nil {
-				return own, err
-			}
+		if err := dropPin(ctx, target, node); err != nil {
+			return own, err
 		}
 	}
 	return own, nil
+}
+
+func dropPin(ctx context.Context, target *Target, node corev1.Node) error {
+	pin := pinDrop(node)
+	if len(pin) == 0 {
+		return nil
+	}
+	_, err := target.Clientset.CoreV1().Nodes().Patch(ctx, node.Name, types.JSONPatchType, pin.body(),
+		jsonPatchOptions)
+	_, err = outcomeOf(err)
+	return err
 }
 
 func ownCordon(node corev1.Node) bool {
@@ -789,15 +808,28 @@ func waitRolls(ctx context.Context, target *Target, rolls []appRoll, pools []str
 	}
 }
 
-func emptyPool(ctx context.Context, target *Target, pool coralPool) (bool, error) {
+func recordApps(ctx context.Context, target *Target, pool *coralPool) error {
+	apps := unionApps(pool.apps, pool.found)
+	if len(apps) == len(pool.apps) {
+		return nil
+	}
+	pool.apps = apps
+	_, err := writePool(ctx, target, *pool, false)
+	return err
+}
+
+func writePool(ctx context.Context, target *Target, pool coralPool, empty bool) (bool, error) {
 	resource, served := mappedResource(target, KarpenterGroup, KindNodePool)
 	if !served {
 		return true, nil
 	}
 	record, _ := json.Marshal(pool.apps)
-	body, _ := json.Marshal(map[string]any{
-		"metadata": map[string]any{"annotations": map[string]string{AnnotationDisconnectApps: string(record)}},
-		"spec":     map[string]any{"replicas": 0}})
+	change := map[string]any{
+		"metadata": map[string]any{"annotations": map[string]string{AnnotationDisconnectApps: string(record)}}}
+	if empty {
+		change["spec"] = map[string]any{"replicas": 0}
+	}
+	body, _ := json.Marshal(change)
 	_, err := target.Dynamic.Resource(resource).Patch(ctx, pool.name, types.MergePatchType, body,
 		metav1.PatchOptions{FieldManager: FieldManager})
 	if apierrors.IsNotFound(err) {
