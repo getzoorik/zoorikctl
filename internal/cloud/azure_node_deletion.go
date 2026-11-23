@@ -295,15 +295,89 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 	case !taggedFor(tagValue(found.Tags, clusterTag), cluster.ID()):
 		plan.note("Managed identity " + name + " is not tagged " + clusterTag + "=" + clusterTagValue(cluster.ID()) +
 			", so zoorikctl did not create it for this cluster; it is left alone.")
+	case tagValue(found.Tags, createdByTag) != createdByZoorikctl:
+		plan.note("Managed identity " + name + " is not tagged " + createdByTag + "=" + createdByZoorikctl + ", so it " +
+			"stays, without Zoorik's role: remove it where you made it.")
 	default:
 		plan.Found = append(plan.Found, "Managed identity "+name+" in "+group+", tagged "+clusterTag+"="+
 			clusterTagValue(cluster.ID()))
 		plan.Steps = append(plan.Steps, ownIdentityRemoval(runner, cluster, name, identityShow)...)
 	}
-	plan.note("The roles \"" + nodeRemovalRole + "\" and \"" + legacyNodeRemovalRole + "\", where defined, stay " +
-		"defined in subscription " + subscription + " for other clusters, and workload identity and the OIDC issuer " +
-		"stay on.")
+	for _, role := range []string{nodeRemovalRole, legacyNodeRemovalRole} {
+		definitions, err := customRoles(ctx, runner, subscription, role)
+		if err != nil {
+			plan.block("Azure would not list the role \""+role+"\": "+err.Error(),
+				"Check that your sign-in may read role definitions in subscription "+subscription+", and run this "+
+					"disconnect again. Nothing has been changed.")
+			return plan
+		}
+		if len(definitions) == 0 {
+			continue
+		}
+		if others := otherAssignments(ctx, runner, cluster, role); others > 0 {
+			plan.note(fmt.Sprintf("The role \"%s\" stays: %d other assignment(s) in subscription %s still use it.",
+				role, others, subscription))
+			continue
+		}
+		plan.Found = append(plan.Found, "The role \""+role+"\", defined for subscription "+subscription)
+		plan.Steps = append(plan.Steps, roleRemovalStep(runner, subscription, role))
+	}
+	plan.note("Workload identity and the OIDC issuer stay on.")
 	return plan
+}
+
+func otherAssignments(ctx context.Context, runner *Runner, cluster AzureCluster, role string) int {
+	var assignments []roleAssignment
+	if runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", cluster.Subscription,
+		"--role", role, "--all", "--fill-principal-name", "false", "-o", "json"), &assignments) != nil {
+		return 0
+	}
+	others := 0
+	for _, assignment := range assignments {
+		if !strings.EqualFold(assignment.Scope, cluster.ID()) {
+			others++
+		}
+	}
+	return others
+}
+
+func roleRemovalStep(runner *Runner, subscription, role string) Step {
+	kept := ""
+	remove := Cmd(azureCLI, "role", "definition", "delete", "--subscription", subscription, "--name", role,
+		"--scope", "/subscriptions/"+subscription)
+	defined := func(ctx context.Context) (bool, error) {
+		definitions, err := customRoles(ctx, runner, subscription, role)
+		return len(definitions) > 0, err
+	}
+	return Step{
+		Title:    "Delete the role \"" + role + "\"",
+		Why:      "zoorikctl defined it for the agent. Azure keeps it while anything is still assigned it.",
+		Commands: []string{remove.String()},
+		Check: func(ctx context.Context) (bool, error) {
+			if kept != "" {
+				return true, nil
+			}
+			present, err := defined(ctx)
+			return err == nil && !present, err
+		},
+		Apply: func(ctx context.Context, note func(string)) error {
+			present, err := defined(ctx)
+			if err != nil || !present {
+				return err
+			}
+			err = runner.Run(ctx, remove)
+			switch {
+			case stderrHas(err, "RoleDefinitionHasAssignments"):
+				kept = "it stays, as something is still assigned it"
+				return nil
+			case stderrHas(err, "AuthorizationFailed"):
+				kept = "it stays, as your sign-in may not delete it in every scope it can be assigned in"
+				return nil
+			}
+			return err
+		},
+		Kept: func() string { return kept },
+	}
 }
 
 func assignmentRemovalStep(runner *Runner, cluster AzureCluster, role string, idsAtPlan []string) Step {
@@ -387,7 +461,7 @@ func ownIdentityRemoval(runner *Runner, cluster AzureCluster, name string, ident
 		{
 			Title: "Delete the managed identity " + name,
 			Why: "zoorikctl created it in " + group + " for this cluster, tagged " + clusterTag + "=" +
-				clusterTagValue(cluster.ID()) + ".",
+				clusterTagValue(cluster.ID()) + " and " + createdByTag + "=" + createdByZoorikctl + ".",
 			Commands: []string{identityDelete.String()},
 			Check:    identityGone,
 			Apply: func(ctx context.Context, note func(string)) error {
@@ -555,7 +629,7 @@ func identityStep(runner *Runner, cluster AzureCluster, chosen azureIdentity, lo
 	tag := clusterTagValue(cluster.ID())
 	create := Cmd(azureCLI, "identity", "create", "--subscription", cluster.Subscription, "--resource-group",
 		chosen.ResourceGroup, "--name", chosen.Name, "--location", location, "--tags", clusterTag+"="+tag,
-		"-o", "none")
+		createdByTag+"="+createdByZoorikctl, "-o", "none")
 	exists := func(ctx context.Context) (bool, error) {
 		err := runner.Run(ctx, identityShow)
 		if NotFound(err) {

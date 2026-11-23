@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,7 +21,11 @@ const ConnectTokenPath = "/install/v1/connect-token"
 
 const RegisterPath = "/install/v1/register"
 
+const AgentDisconnectPath = "/agent/v1/disconnect"
+
 const RequestIDHeader = "Zoorik-Request-Id"
+
+const clusterNotRegistered = "cluster-not-registered"
 
 const requestTimeout = 30 * time.Second
 
@@ -41,8 +46,15 @@ type AgentSetup struct {
 }
 
 type Problem struct {
+	Title  string `json:"title"`
 	Detail string `json:"detail"`
 	Code   string `json:"code"`
+}
+
+type DisconnectAnswer struct {
+	Told        bool
+	Unreachable bool
+	Reason      string
 }
 
 type Client struct {
@@ -108,6 +120,35 @@ func (c *Client) FetchConnectTokenStatus(ctx context.Context) (*ConnectTokenStat
 			"Nothing on the cluster is affected. Report this with the request id above.").WithDetail(requestID...)
 	}
 	return &tokenStatus, nil
+}
+
+func (c *Client) Disconnect(ctx context.Context) DisconnectAnswer {
+	status, body, _, err := c.post(ctx, AgentDisconnectPath, nil)
+	if err != nil {
+		cause := err
+		var failed *url.Error
+		var refused *refusal.Refusal
+		switch {
+		case errors.As(err, &failed):
+			cause = failed.Err
+		case errors.As(err, &refused) && refused.Cause != nil:
+			cause = refused.Cause
+		}
+		return DisconnectAnswer{Unreachable: true, Reason: cause.Error()}
+	}
+	var problem Problem
+	_ = json.Unmarshal(body, &problem)
+	answered := fmt.Sprintf("it answered HTTP %d", status)
+	if title := strings.TrimSpace(problem.Title); title != "" {
+		answered += " (" + title + ")"
+	}
+	switch {
+	case status >= 200 && status < 300, status == http.StatusNotFound && problem.Code == clusterNotRegistered:
+		return DisconnectAnswer{Told: true}
+	case status >= 500:
+		return DisconnectAnswer{Unreachable: true, Reason: answered}
+	}
+	return DisconnectAnswer{Reason: answered}
 }
 
 const maxResponseBytes = 8 << 20

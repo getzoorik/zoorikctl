@@ -40,6 +40,10 @@ const (
 
 	clusterTag = "zoorik-cluster"
 
+	createdByTag = "zoorik-created-by"
+
+	createdByZoorikctl = "zoorikctl"
+
 	nodeRemovalRole = "Zoorik Node Removal v2"
 
 	legacyNodeRemovalRole = "Zoorik Node Removal v1"
@@ -75,6 +79,7 @@ type Step struct {
 	Upgrade         bool
 	Check           func(ctx context.Context) (bool, error)
 	Apply           func(ctx context.Context, note func(string)) error
+	Kept            func() string
 }
 
 type Blocker struct {

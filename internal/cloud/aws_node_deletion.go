@@ -427,8 +427,12 @@ func PlanNodeDeletionCleanupEKS(ctx context.Context, runner *Runner, input Input
 	for _, name := range holders {
 		plan.Steps = append(plan.Steps, policyRemovalStep(runner, cluster, name, policy))
 	}
-	if own.exists {
+	switch {
+	case own.exists && own.role.tag(createdByTag) == createdByZoorikctl:
 		plan.Steps = append(plan.Steps, ownRoleRemoval(ctx, runner, cluster, own)...)
+	case own.exists:
+		plan.note("Role " + own.name + " is not tagged " + createdByTag + "=" + createdByZoorikctl + ", so it stays, " +
+			"without Zoorik's policy: remove it where you made it.")
 	}
 	plan.note("The EKS Pod Identity Agent add-on and the cluster's IAM OIDC provider stay; other workloads may use " +
 		"them. A role zoorikctl did not create keeps everything else it holds.")
@@ -503,7 +507,7 @@ func ownRoleRemoval(ctx context.Context, runner *Runner, cluster EKSCluster, own
 		{
 			Title: "Delete the role " + own.name,
 			Why: "zoorikctl created it for this cluster, tagged " + clusterTag + "=" + clusterTagValue(cluster.ARN()) +
-				".",
+				" and " + createdByTag + "=" + createdByZoorikctl + ".",
 			Commands: []string{deleteRole.String()},
 			Check:    roleGone,
 			Apply: func(ctx context.Context, note func(string)) error {
@@ -671,7 +675,8 @@ func agentRoleStep(runner *Runner, cluster EKSCluster, roleName string, exists b
 		"service account."
 	tag := clusterTagValue(cluster.ARN())
 	create := Cmd(awsCLI, awsArgs(cluster, "iam", "create-role", "--role-name", roleName,
-		"--assume-role-policy-document", trust, "--tags", "Key="+clusterTag+",Value="+tag)...)
+		"--assume-role-policy-document", trust, "--tags", "Key="+clusterTag+",Value="+tag,
+		"Key="+createdByTag+",Value="+createdByZoorikctl)...)
 	update := Cmd(awsCLI, awsArgs(cluster, "iam", "update-assume-role-policy", "--role-name", roleName,
 		"--policy-document", trust)...)
 	state := func(ctx context.Context) (bool, bool, error) {

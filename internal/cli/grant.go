@@ -413,21 +413,47 @@ func clusterCommand(verb string, target *kube.Target, kubeconfig, clusterResourc
 	return command
 }
 
-func cleanUpNodeDeletion(ctx context.Context, s *session, target *kube.Target, identity kube.Identity,
-	identifyErr error, occupant kube.Occupant, options *commonOptions) {
+type cloudUndo struct {
+	plan    cloud.Plan
+	pending []cloud.Step
+	unread  string
+	agreed  bool
+	unasked bool
+	left    []cloud.Step
+}
+
+func (u cloudUndo) clean() bool {
+	return u.unread == "" && len(u.pending) == 0
+}
+
+func (u cloudUndo) done() bool {
+	return u.unread == "" && len(u.left) == 0
+}
+
+func (u cloudUndo) code() refusal.Code {
+	switch {
+	case u.unread != "", u.agreed && len(u.left) > 0:
+		return refusal.CodeApply
+	case len(u.left) > 0:
+		return refusal.CodeNotConfirmed
+	}
+	return 0
+}
+
+func planCloudUndo(ctx context.Context, out *ui.Printer, target *kube.Target, identity kube.Identity,
+	identifyErr error, occupant kube.Occupant) cloudUndo {
 	held := identifyErr == nil && identity.Cloud == kube.CloudLocal
 	if held {
 		identity.Cloud = heldCloudOf(occupant)
 		if identity.Cloud == kube.CloudLocal {
-			return
+			return cloudUndo{}
 		}
 	}
-	out := s.out
 	out.Section("Cloud Changes")
 	if identifyErr != nil {
 		out.Warn("The cloud changes zoorikctl made to grant node deletion were not looked for: " +
 			text.OneLine(identifyErr.Error()))
-		return
+		return cloudUndo{unread: whatOf(identifyErr)}
 	}
 	if held {
 		out.Dim("No node names a cloud now; the agent's configuration names " + providerName(identity.Cloud) +
@@ -463,51 +489,30 @@ func cleanUpNodeDeletion(ctx context.Context, s *session, target *kube.Target, i
 		out.Detail(plan.Blockers[0].Remedy)
 		out.Detail("If zoorikctl granted node deletion here, it created " + created + "; remove it by hand, and put " +
 			"back " + lowered + " to the value of that tag.")
-		return
+		return cloudUndo{plan: plan, unread: plan.Blockers[0].What}
 	}
 	if err := checkSteps(ctx, out, &plan); err != nil {
 		out.Warn("The cloud changes zoorikctl made could not be checked: " + whatOf(err))
-		return
+		return cloudUndo{plan: plan, unread: whatOf(err)}
 	}
 	pending := plan.Pending()
 	if len(pending) == 0 {
 		printNotes(out, plan.Notes)
 		out.Success("No cloud change zoorikctl made for this cluster is left")
-		return
+		return cloudUndo{plan: plan}
 	}
 	printSetupPlan(out, plan)
-	if options.DryRun {
-		return
-	}
+	return cloudUndo{plan: plan, pending: pending}
+}
 
-	out.Blank()
-	switch {
-	case options.Yes:
-		s.errs.Success(fmt.Sprintf("Undoing %d cloud change(s) (--yes)", len(pending)))
-	case !s.streams.Interactive:
-		out.Info("Left in place: nobody is at a terminal to agree, and --yes was not given. Run the commands " +
-			"above, or this disconnect again with --yes.")
-		return
-	default:
-		s.errs.Prompt(fmt.Sprintf("Undo these %d cloud change(s) zoorikctl made for %s, with %s? [y/N]",
-			len(pending), text.OrText(plan.Cluster, target.ContextName), plan.Credential))
-		answer, err := readAnswer(ctx, s.streams.In)
-		if err != nil || (!strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes")) {
-			out.Info("Left in place. Run the commands above to undo them later, or run this disconnect again.")
-			return
+func stillPending(ctx context.Context, steps []cloud.Step) []cloud.Step {
+	var left []cloud.Step
+	for _, step := range steps {
+		if done, err := step.Check(ctx); err != nil || !done {
+			left = append(left, step)
 		}
 	}
-	if err := applySteps(ctx, out, plan, pending); err != nil {
-		out.Warn("Undoing the cloud changes stopped: " + causeOf(err))
-		out.Detail("Every change already undone stays undone; run this disconnect again to resume.")
-		return
-	}
-	if plan.RestoresMinimums() {
-		out.Success("Put back every node pool minimum Zoorik lowered, and removed the cloud objects zoorikctl " +
-			"created to grant node deletion")
-		return
-	}
-	out.Success("Removed the cloud objects zoorikctl created to grant node deletion")
+	return left
 }
 
 func whatOf(err error) string {

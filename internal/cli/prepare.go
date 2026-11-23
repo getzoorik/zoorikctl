@@ -430,6 +430,10 @@ func applySteps(ctx context.Context, out *ui.Printer, plan cloud.Plan, pending [
 			spinner.Fail(label + ": stopped")
 			return stepFailed(plan, pending, index, err)
 		}
+		if step.Kept != nil && step.Kept() != "" {
+			spinner.Warn(label + ": " + step.Kept())
+			continue
+		}
 		spinner.Tick(label + ": checking that it is in place...")
 		if err := requireInPlace(ctx, step); err != nil {
 			spinner.Fail(label + ": not in place")
@@ -463,7 +467,11 @@ func printSetupPlan(out *ui.Printer, plan cloud.Plan) {
 	}
 	out.Blank()
 	out.Plain(fmt.Sprintf("  %d change(s) to make, with %s:", len(pending), plan.Credential))
-	for index, step := range pending {
+	printSteps(out, pending)
+}
+
+func printSteps(out *ui.Printer, steps []cloud.Step) {
+	for index, step := range steps {
 		out.Blank()
 		out.Info(fmt.Sprintf("%d. %s", index+1, step.Title))
 		out.Detail(step.Why)
