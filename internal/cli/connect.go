@@ -252,11 +252,11 @@ func runConnect(ctx context.Context, args []string, s *session) error {
 	if grant.Cluster != "" && !options.ClusterResourceGiven &&
 		!strings.EqualFold(options.ClusterResourceID, grant.Cluster) {
 		setAgentConfig(docs, kube.AgentClusterResourceIDKey, grant.Cluster)
+		matched := ", the cluster your " + providerName(identity.Cloud) + " sign-in matched."
 		if options.ClusterResourceID != "" {
-			out.Detail("Cluster resource " + options.ClusterResourceID + " replaced by " + grant.Cluster +
-				", the cluster node deletion was granted on.")
+			out.Detail("Cluster resource " + options.ClusterResourceID + " replaced by " + grant.Cluster + matched)
 		} else {
-			out.Detail("Cluster resource set to " + grant.Cluster + ", the cluster node deletion was granted on.")
+			out.Detail("Cluster resource set to " + grant.Cluster + matched)
 		}
 		options.ClusterResourceID = grant.Cluster
 	}
@@ -420,6 +420,7 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	var provisioner cloud.Plan
 	if err == nil {
 		provisioner = planProvisioner(ctx, out, target, identity, found, resource, kept)
+		grant.pin(provisioner)
 	}
 	switch {
 	case err != nil:
@@ -447,6 +448,7 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	}
 	if options.CloudIdentity == "" && ctx.Err() == nil {
 		deletion := planNodeDeletion(ctx, out, target, identity, resource, kept, occupant.CloudIdentityClientID)
+		grant.pin(deletion.Plan)
 		if len(deletion.Blockers) > 0 {
 			printFound(out, deletion.Plan)
 			grant.notDone(out, "Node deletion was not granted", planBlocked(deletion.Plan), deletionLeft, grantLater)
@@ -479,6 +481,11 @@ func (g *connectGrant) settle(ctx context.Context, s *session, plan cloud.NodeDe
 	}
 	if binding != nil {
 		g.Binding = binding
+	}
+}
+
+func (g *connectGrant) pin(plan cloud.Plan) {
+	if plan.Matched && g.Cluster == "" {
 		g.Cluster = plan.Cluster
 	}
 }

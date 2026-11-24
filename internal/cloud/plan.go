@@ -93,6 +93,7 @@ type Plan struct {
 	Provisioner     string
 	Present         bool
 	Cluster         string
+	Matched         bool
 	Credential      string
 	Found           []string
 	Blockers        []Blocker
