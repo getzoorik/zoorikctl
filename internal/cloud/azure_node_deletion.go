@@ -522,6 +522,7 @@ func signInAKS(ctx context.Context, runner *Runner, plan *Plan, input Input, p p
 		plan.block(mismatch, wrongCluster(p.removal))
 		return AzureCluster{}, aksCluster{}, Command{}, false
 	}
+	plan.Matched = true
 	return cluster, shown, showCommand, true
 }
 
