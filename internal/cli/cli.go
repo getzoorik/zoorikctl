@@ -163,7 +163,7 @@ USAGE
   zoorikctl cluster disconnect [--kube-context=<context>] [--yes] [--dry-run]
   zoorikctl cluster grant-node-deletion [--kube-context=<context>] [--cluster-resource-id=<arm-id|eks-arn>]
                                         [--dry-run] [--yes]
-  zoorikctl vm connect [--connect-token=<connect-token>] [--api-region=us | --api-url=<url>]
+  zoorikctl vm connect [--connect-token=<connect-token>] [--api-region=<region> | --api-url=<url>]
                        [--yes] [--dry-run]
   zoorikctl version
 
@@ -518,10 +518,12 @@ VM CONNECT
 
   --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Without it,
                      ZOORIK_CONNECT_TOKEN. One of them is required.
-  --api-region       Which control plane to ask. Default "us", at https://lab.zoorik.com/amoeba.
-  --api-url          Zoorik Amoeba's address, instead of --api-region, as the Connect a VM dialog
-                     prints it: for example https://lab.zoorik.com/amoeba. The console link printed
-                     at the end is this address followed by /overview.
+  --api-region       Which control plane to ask, as the Connect a VM dialog prints it: "us" is
+                     https://app.zoorik.com/amoeba and "lab" is https://lab.zoorik.com/amoeba.
+                     Default "us".
+  --api-url          Zoorik Amoeba's address, instead of --api-region. For development. The
+                     console link printed at the end is the control plane's address followed by
+                     /overview.
   --yes, -y          Make the cloud changes without asking. With no terminal and no --yes, the VM
                      connects without them.
   --dry-run          Check the VM, fetch the setup, print the plan and the block of commands, and

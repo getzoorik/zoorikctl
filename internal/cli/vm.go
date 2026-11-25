@@ -83,7 +83,7 @@ func parseVMConnect(args []string, out, errOut io.Writer) (*vmConnectOptions, er
 	options.ConnectToken = strings.TrimSpace(text.OrText(options.ConnectToken, os.Getenv(connectTokenVariable)))
 	if options.ConnectToken == "" {
 		return nil, usageError(set.Name(), "No connect token was given. Run the two lines from the console's "+
-			"Connect a VM dialog: the second sets "+connectTokenVariable+" to the zoorik_v1_ connect token.")
+			"Connect a VM dialog: the second passes the zoorik_v1_ connect token.")
 	}
 	return options, nil
 }
