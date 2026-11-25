@@ -461,8 +461,7 @@ GRANT-NODE-DELETION
 VM CONNECT
   Connects the Linux VM it runs on to Zoorik Amoeba. Run it on the VM itself, as yourself, for
   example over SSH. The console's Connect a VM dialog prints two lines: the zoorikctl install, and
-  this command with the connect token in ZOORIK_CONNECT_TOKEN, since any user of the VM can read a
-  command line but not another user's environment. In order it:
+  this command with --connect-token and --api-region. In order it:
     1. checks, changing nothing, that this is an Azure VM or an AWS EC2 instance running Linux with
        systemd and at least one data disk, and on AWS that its EBS volumes are NVMe devices (an
        instance type built on the Nitro System). Anything else stops here, with exit code 11;
