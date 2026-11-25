@@ -18,6 +18,8 @@ type region struct {
 
 var regions = map[string]region{
 	"us": {api: "https://dev.zoorik.com/coral", console: "https://dev.zoorik.com/coral",
+		amoeba: "https://app.zoorik.com/amoeba"},
+	"lab": {api: "https://lab.zoorik.com/coral", console: "https://lab.zoorik.com/coral",
 		amoeba: "https://lab.zoorik.com/amoeba"},
 }
 
