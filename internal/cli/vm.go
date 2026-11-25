@@ -27,8 +27,6 @@ type vmConnectOptions struct {
 }
 
 const (
-	connectTokenVariable = "ZOORIK_CONNECT_TOKEN"
-
 	vmGrantCanceled = "Not agreed: this run makes no change to Zoorik's access to this VM's data disks."
 
 	agentConnected = "CONNECTED"
@@ -80,7 +78,7 @@ func parseVMConnect(args []string, out, errOut io.Writer) (*vmConnectOptions, er
 	if parsed, err := parseCommon(set, args, out, errOut, &options.commonOptions); !parsed {
 		return nil, err
 	}
-	options.ConnectToken = strings.TrimSpace(text.OrText(options.ConnectToken, os.Getenv(connectTokenVariable)))
+	options.ConnectToken = strings.TrimSpace(options.ConnectToken)
 	if options.ConnectToken == "" {
 		return nil, usageError(set.Name(), "No connect token was given. Run the two lines from the console's "+
 			"Connect a VM dialog: the second passes the zoorik_v1_ connect token.")

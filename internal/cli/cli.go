@@ -515,8 +515,7 @@ VM CONNECT
   to someone who may make them. Until they run, the console shows the VM as Waiting for
   permission: its metrics are collected, and no migration starts.
 
-  --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Without it,
-                     ZOORIK_CONNECT_TOKEN. One of them is required.
+  --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Required.
   --api-region       Which control plane to ask, as the Connect a VM dialog prints it: "us" is
                      https://app.zoorik.com/amoeba and "lab" is https://lab.zoorik.com/amoeba.
                      Default "us".
