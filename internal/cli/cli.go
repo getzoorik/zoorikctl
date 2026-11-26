@@ -163,7 +163,7 @@ USAGE
   zoorikctl cluster disconnect [--kube-context=<context>] [--yes] [--dry-run]
   zoorikctl cluster grant-node-deletion [--kube-context=<context>] [--cluster-resource-id=<arm-id|eks-arn>]
                                         [--dry-run] [--yes]
-  zoorikctl vm connect [--connect-token=<connect-token>] [--api-region=us | --api-url=<url>]
+  zoorikctl vm connect [--connect-token=<connect-token>] [--api-region=<region> | --api-url=<url>]
                        [--yes] [--dry-run]
   zoorikctl version
 
@@ -461,8 +461,7 @@ GRANT-NODE-DELETION
 VM CONNECT
   Connects the Linux VM it runs on to Zoorik Amoeba. Run it on the VM itself, as yourself, for
   example over SSH. The console's Connect a VM dialog prints two lines: the zoorikctl install, and
-  this command with the connect token in ZOORIK_CONNECT_TOKEN, since any user of the VM can read a
-  command line but not another user's environment. In order it:
+  this command with --connect-token and --api-region. In order it:
     1. checks, changing nothing, that this is an Azure VM or an AWS EC2 instance running Linux with
        systemd and at least one data disk, and on AWS that its EBS volumes are NVMe devices (an
        instance type built on the Nitro System). Anything else stops here, with exit code 11;
@@ -516,12 +515,13 @@ VM CONNECT
   to someone who may make them. Until they run, the console shows the VM as Waiting for
   permission: its metrics are collected, and no migration starts.
 
-  --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Without it,
-                     ZOORIK_CONNECT_TOKEN. One of them is required.
-  --api-region       Which control plane to ask. Default "us", at https://lab.zoorik.com/amoeba.
-  --api-url          Zoorik Amoeba's address, instead of --api-region, as the Connect a VM dialog
-                     prints it: for example https://lab.zoorik.com/amoeba. The console link printed
-                     at the end is this address followed by /overview.
+  --connect-token    The connect token (zoorik_v1_...) from the Connect a VM dialog. Required.
+  --api-region       Which control plane to ask, as the Connect a VM dialog prints it: "us" is
+                     https://app.zoorik.com/amoeba and "lab" is https://lab.zoorik.com/amoeba.
+                     Default "us".
+  --api-url          Zoorik Amoeba's address, instead of --api-region. For development. The
+                     console link printed at the end is the control plane's address followed by
+                     /overview.
   --yes, -y          Make the cloud changes without asking. With no terminal and no --yes, the VM
                      connects without them.
   --dry-run          Check the VM, fetch the setup, print the plan and the block of commands, and
