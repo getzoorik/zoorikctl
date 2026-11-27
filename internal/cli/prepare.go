@@ -373,7 +373,7 @@ func printReadiness(out *ui.Printer, cloudName string, pools []kube.PoolCRIURead
 		"containerd or its restore setting, or OS image changes. Source and target of a move share the " +
 		"architecture and OS family, the target's CPU offers every feature of the source's, and its kernel is at " +
 		"least the source's. " +
-		"Zoorik installs no packages and never changes your node pools or their containerd.")
+		"Zoorik installs no packages and never changes a node's containerd.")
 }
 
 func moveAdvice(cloudName string, pool kube.PoolCRIUReadiness) string {

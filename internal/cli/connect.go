@@ -393,7 +393,8 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	out := s.out
 	out.Section("Cloud Setup")
 	out.Paragraph("", "Zoorik only removes nodes: the cluster's own provisioner or cluster autoscaler adds them "+
-		"for Pending pods. A cluster with neither gets its cloud's own provisioner now, and a provisioner with no "+
+		"for Pending pods. A cluster with neither, or with only the cluster autoscaler, gets its cloud's own "+
+		"provisioner now (in the autoscaler's place), and a provisioner with no "+
 		"NodePool of the cluster's own gets its default NodePools. Node optimization removes a node only after it "+
 		"has cordoned and emptied it, and on many node pools that last step, or the pool's minimum, needs a cloud "+
 		"permission the agent cannot grant itself. Each is set up now with your own cloud sign-in and asked for on "+

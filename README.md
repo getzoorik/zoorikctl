@@ -100,12 +100,16 @@ the previous one, and the agent upgrades itself the same way. `sudo` is used for
 Cloud changes run through your own `az` or `aws` sign-in. `zoorikctl` never stores a cloud credential.
 
 - **Node provisioning** (`prepare`, and the first question in `connect`). Where the cluster has no
-  provisioner and no cluster autoscaler: on AKS it turns on Node Auto Provisioning; on EKS it installs
-  Karpenter with its IAM roles, interruption queue and discovery tags, and, where nodes join only
-  through the `aws-auth` ConfigMap, switches the authentication mode to `API_AND_CONFIG_MAP`, which
-  cannot be switched back. A provisioner or autoscaler you already run is kept: `prepare` only adds a
-  default NodePool where it has none of the cluster's own, and the node class `zoorik-base` that
-  Zoorik's own pools copy.
+  provisioner, or only the cluster autoscaler: on AKS it turns the autoscaler off on each pool that
+  uses it (the pool keeps its nodes) and turns on Node Auto Provisioning, after which Azure refuses the
+  autoscaler; on EKS it installs Karpenter with its IAM roles, interruption queue and discovery tags,
+  and, where nodes join only through the `aws-auth` ConfigMap, switches the authentication mode to
+  `API_AND_CONFIG_MAP`, which cannot be switched back. On EKS it then scales the cluster autoscaler to 0
+  and adds an admission policy that refuses it coming back, so a Terraform or Helm apply that
+  reinstates it fails with a message instead of running two autoscalers. Where the switch cannot work
+  (for example kubenet on AKS), the autoscaler stays and `prepare` says why. A provisioner you already
+  run is kept: `prepare` only adds a default NodePool where it has none of the cluster's own, and the
+  node class `zoorik-base` that Zoorik's own pools copy.
 - **Removing spare machines** (`grant-node-deletion`, and the second question in `connect`). On AKS: it
   turns on workload identity and the OIDC issuer if they are off, and creates a managed identity
   `zoorik-agent-<cluster>` with the custom role "Zoorik Node Removal v2" on this cluster only. On EKS:
@@ -132,7 +136,9 @@ everything first, and asks one question only when `zoorikctl` left something in 
 the agent and tells Zoorik that the cluster leaves the console. On a yes, it puts back the node pool
 minimums Zoorik lowered and removes the access `zoorikctl` granted in the cloud. It removes the
 webhook, roles and policies, and hands back what Zoorik changed on your autoscalers, workloads and
-nodes, each field only if it is still as Zoorik left it. It moves your apps off Zoorik's own
+nodes, each field only if it is still as Zoorik left it; on EKS it removes the admission policy and
+scales the cluster autoscaler back to what it was. On AKS the autoscaler stays off, because Node Auto
+Provisioning stays on. It moves your apps off Zoorik's own
 NodePools onto your machines, then empties and deletes those pools; a pod that cannot move holds its
 pool, and the run names it. Last, it deletes the resource definitions, the Helm release and the
 namespace. A disconnect that stops part-way picks up where it left off when you run it again.
