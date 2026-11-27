@@ -48,6 +48,8 @@ const (
 
 	legacyNodeRemovalRole = "Zoorik Node Removal v1"
 
+	spotCapacityRole = "Zoorik Spot Capacity Reader v1"
+
 	nodeRemovalPolicyName = "ZoorikNodeRemoval"
 
 	originalMinimumTag = "coral.zoorik.com/original-min"

@@ -29,6 +29,8 @@ const (
 	sourceARNKey = "aws:SourceArn"
 
 	sourceAccountKey = "aws:SourceAccount"
+
+	standardSpotVCPUQuota = "L-34B43A08"
 )
 
 var clusterNameTags = []string{"eks:cluster-name", "aws:eks:cluster-name", "eks:eks-cluster-name"}
@@ -145,6 +147,8 @@ func nodeRemovalPolicy(cluster EKSCluster, roleName string) string {
 	nodegroups := "arn:" + cluster.Partition + ":eks:" + cluster.Region + ":" + cluster.Account + ":nodegroup/" +
 		cluster.Name + "/*/*"
 	role := "arn:" + cluster.Partition + ":iam::" + cluster.Account + ":role/" + roleName
+	spotQuota := "arn:" + cluster.Partition + ":servicequotas:" + cluster.Region + ":" + cluster.Account + ":ec2/" +
+		standardSpotVCPUQuota
 	ownedGroup := map[string]any{"autoscaling:ResourceTag/kubernetes.io/cluster/" + cluster.Name: "owned"}
 	namedGroup := map[string]any{"autoscaling:ResourceTag/eks:cluster-name": cluster.Name}
 	minimumOnly := map[string]any{"autoscaling:MinSize": "false", "autoscaling:MaxSize": "true",
@@ -186,6 +190,10 @@ func nodeRemovalPolicy(cluster EKSCluster, roleName string) string {
 		map[string]any{"Sid": "RecordMinimumOnThisClustersManagedNodeGroups", "Effect": "Allow",
 			"Action": "eks:TagResource", "Resource": nodegroups,
 			"Condition": map[string]any{"ForAllValues:StringEquals": minimumTags, "Null": tagKeysGiven}},
+		map[string]any{"Sid": "ReadSpotQuota", "Effect": "Allow",
+			"Action": "servicequotas:GetServiceQuota", "Resource": spotQuota},
+		map[string]any{"Sid": "ReadSpotPlacementScores", "Effect": "Allow",
+			"Action": "ec2:GetSpotPlacementScores", "Resource": "*"},
 	}})
 }
 
@@ -761,7 +769,9 @@ func nodeRemovalPolicyStep(runner *Runner, cluster EKSCluster, roleName, policyN
 			"only the tags " + originalMinimumTag + " and " + loweredMinimumTag + ", which record the minimum " +
 			"before Zoorik lowered it so disconnect can put it back. It cannot launch or delete a group, and " +
 			"the agent never raises a size. IAM cannot require ShouldDecrementDesiredCapacity; the agent always " +
-			"sends it as true. The policy is named for this cluster, so it never replaces another cluster's.",
+			"sends it as true. It may also read the account's spot vCPU quota in this region and ask EC2 how " +
+			"likely spot capacity is for given instance types; both are reads. The policy is named for this " +
+			"cluster, so it never replaces another cluster's.",
 		Commands: []string{put.String()},
 		Check:    current,
 		Apply: func(ctx context.Context, note func(string)) error {

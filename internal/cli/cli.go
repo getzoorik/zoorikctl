@@ -332,7 +332,11 @@ CONNECT
           creating or changing agent pools), or makes the
           tenant's existing one assignable there, and assigns it on this cluster only. An identity
           that holds the earlier "Zoorik Node Removal v1" on the cluster gets v2 and then loses that
-          v1 assignment; the v1 role stays defined.
+          v1 assignment; the v1 role stays defined. It defines the read-only role "Zoorik Spot
+          Capacity Reader v1" the same way (read a region's spot vCPU quota and usage, and ask how
+          likely spot capacity is for given VM sizes) and assigns it to the identity on the
+          subscription, the only scope Azure offers these reads at; if your sign-in may not do that
+          there, node deletion is set up without it.
     EKS   creates the IAM role zoorik-agent-<cluster> (zoorik-agent-<cluster>-<region> when another
           cluster holds that name) whose inline policy ZoorikNodeRemoval-<cluster>-<hash> may describe
           Auto Scaling groups and terminate an instance only in a group tagged for this cluster;
@@ -340,11 +344,12 @@ CONNECT
           other group settings, though it refuses a request that carries a maximum, a launch
           configuration or template, an image, subnets, instance types or capacity reservations;
           describe this cluster's managed node groups and update their configuration (minimum,
-          maximum, desired size, labels and taints), which AWS cannot narrow further; and
+          maximum, desired size, labels and taints), which AWS cannot narrow further;
           write only the tags coral.zoorik.com/original-min and coral.zoorik.com/lowered-min on those
-          groups. It binds the role with EKS Pod Identity (adding the Pod Identity Agent add-on if
-          missing; the role's trust admits only zoorik-agent/zoorik-agent on this cluster). A role
-          that holds an earlier version of the policy gets this one.
+          groups; and read the region's standard spot vCPU quota and ask EC2 how likely spot capacity
+          is for given instance types. It binds the role with EKS Pod Identity (adding the Pod
+          Identity Agent add-on if missing; the role's trust admits only zoorik-agent/zoorik-agent on
+          this cluster). A role that holds an earlier version of the policy gets this one.
     Before it lowers a minimum, the agent records the one you set in the tag
     coral.zoorik.com/original-min (coral.zoorik.com_original-min on AKS); disconnect puts it back.
     If you raise a minimum the agent lowered, it never lowers that pool again.
@@ -403,8 +408,9 @@ DISCONNECT
        on AKS), never above the pool's maximum now and never below its minimum now, which may add
        machines. Then it removes what zoorikctl created to grant node deletion. On AKS: the
        "Zoorik Node Removal v2" and "Zoorik Node Removal v1" assignments on the cluster, the
+       "Zoorik Spot Capacity Reader v1" assignment of the agent's identity on the subscription, the
        federated credential and the managed identity zoorik-agent-<cluster>, only when zoorikctl
-       created that identity, and the two roles, unless something else is still assigned them or
+       created that identity, and the three roles, unless something else is still assigned them or
        your sign-in may not delete them. On EKS: the inline policy
        ZoorikNodeRemoval-<cluster>-<hash>, and the pod identity association and the IAM role
        zoorik-agent-<cluster>, only when zoorikctl created that role. An identity or role zoorikctl
