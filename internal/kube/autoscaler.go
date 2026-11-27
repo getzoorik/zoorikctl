@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +31,11 @@ const (
 
 	autoscalerPolicyMessage = "Zoorik switched this cluster to Karpenter. The cluster autoscaler can't run beside " +
 		"it. Remove it from your Terraform or Helm, or run zoorikctl cluster disconnect first."
+
+	autoscalerPolicyWait = 30 * time.Second
+
+	releaseStepAutoscalerPolicy = "autoscaler-policy"
+	releaseStepAutoscaler       = "autoscaler"
 )
 
 var clusterAutoscalerImage = regexp.MustCompile(ClusterAutoscalerImagePattern)
@@ -238,4 +244,121 @@ func DeleteAutoscalerStatus(ctx context.Context, target *Target, namespace strin
 		return nil
 	}
 	return err
+}
+
+func (p *ReleasePlan) readAutoscalerSwitch(ctx context.Context, target *Target) error {
+	for _, kind := range []string{validatingPolicyBindingKind, validatingPolicyKind} {
+		_, err := target.Dynamic.Resource(policyResources[kind]).Get(ctx, AutoscalerPolicyName, metav1.GetOptions{})
+		switch {
+		case err == nil:
+			p.autoscalerPolicy = true
+		case !absentAPI(err):
+			return err
+		}
+	}
+	list, err := target.Clientset.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, deployment := range list.Items {
+		if _, recorded := deployment.Annotations[AnnotationReplicasBeforeKarpenter]; recorded {
+			p.stoppedAutoscalers = append(p.stoppedAutoscalers, deployment)
+		}
+	}
+	return nil
+}
+
+func (p *ReleasePlan) autoscalerSwitchItems() []ReleaseItem {
+	var items []ReleaseItem
+	if p.autoscalerPolicy {
+		items = append(items, autoscalerPolicyItem())
+	}
+	for _, deployment := range p.stoppedAutoscalers {
+		recorded := deployment.Annotations[AnnotationReplicasBeforeKarpenter]
+		detail := "scaled back to " + recorded + " replica(s) if it is still at the 0 Zoorik set"
+		if _, readable := recordedReplicas(recorded); !readable {
+			detail = unreadableReplicas(recorded)
+		}
+		items = append(items, ReleaseItem{Step: releaseStepAutoscaler, Kind: kindDeployment,
+			Namespace: deployment.Namespace, Name: deployment.Name, Detail: detail})
+	}
+	return items
+}
+
+func autoscalerPolicyItem() ReleaseItem {
+	return ReleaseItem{Step: releaseStepAutoscalerPolicy, Kind: validatingPolicyKind, Name: AutoscalerPolicyName,
+		Detail: "deleted with its binding, so the cluster autoscaler may run again"}
+}
+
+func recordedReplicas(recorded string) (int, bool) {
+	replicas, err := strconv.Atoi(strings.TrimSpace(recorded))
+	return replicas, err == nil && replicas >= 0
+}
+
+func unreadableReplicas(recorded string) string {
+	return "left as it is: its recorded count \"" + recorded + "\" is not a whole number; Zoorik's note is removed"
+}
+
+func (p *ReleasePlan) handBackAutoscalerSwitch(ctx context.Context, target *Target, report func(ReleaseItem)) error {
+	if p.autoscalerPolicy {
+		for _, kind := range []string{validatingPolicyBindingKind, validatingPolicyKind} {
+			err := target.Dynamic.Resource(policyResources[kind]).Delete(ctx, AutoscalerPolicyName,
+				metav1.DeleteOptions{})
+			if err != nil && !absentAPI(err) {
+				return err
+			}
+		}
+		report(autoscalerPolicyItem())
+	}
+	for _, deployment := range p.stoppedAutoscalers {
+		item, err := restoreAutoscaler(ctx, target, deployment)
+		if err != nil {
+			return err
+		}
+		report(item)
+	}
+	return nil
+}
+
+func restoreAutoscaler(ctx context.Context, target *Target, deployment appsv1.Deployment) (ReleaseItem, error) {
+	item := ReleaseItem{Step: releaseStepAutoscaler, Kind: kindDeployment, Namespace: deployment.Namespace,
+		Name: deployment.Name}
+	recorded := deployment.Annotations[AnnotationReplicasBeforeKarpenter]
+	var note jsonPatch
+	note.drop(annotationPath(AnnotationReplicasBeforeKarpenter), recorded)
+	replicas, readable := recordedReplicas(recorded)
+	if !readable {
+		outcome, err := patchAutoscaler(ctx, target, deployment, note)
+		item = settled(item, outcome, unreadableReplicas(recorded))
+		item.Left = outcome != patchGone
+		return item, err
+	}
+	var restore jsonPatch
+	restore.test(pointer("spec", "replicas"), 0)
+	restore.replace(pointer("spec", "replicas"), replicas)
+	outcome, err := patchAutoscaler(ctx, target, deployment, append(restore, note...))
+	if err != nil || outcome != patchStale {
+		return settled(item, outcome, "scaled back to "+strconv.Itoa(replicas)+" replica(s)"), err
+	}
+	outcome, err = patchAutoscaler(ctx, target, deployment, note)
+	if outcome == patchGone {
+		return settled(item, outcome, ""), err
+	}
+	return settled(item, patchStale, ""), err
+}
+
+func patchAutoscaler(ctx context.Context, target *Target, deployment appsv1.Deployment, patch jsonPatch) (
+	writeOutcome, error) {
+	deployments := target.Clientset.AppsV1().Deployments(deployment.Namespace)
+	deadline := time.Now().Add(autoscalerPolicyWait)
+	for {
+		_, err := deployments.Patch(ctx, deployment.Name, types.JSONPatchType, patch.body(), jsonPatchOptions)
+		if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), AutoscalerPolicyName) ||
+			time.Now().After(deadline) {
+			return outcomeOf(err)
+		}
+		if err := pause(ctx, 2*time.Second); err != nil {
+			return patchApplied, err
+		}
+	}
 }

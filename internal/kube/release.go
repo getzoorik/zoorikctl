@@ -10,6 +10,7 @@ import (
 
 	"github.com/getzoorik/zoorikctl/internal/api"
 
+	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -127,12 +128,15 @@ type ReleasePlan struct {
 	helmName        string
 	helmNamespace   string
 	namespace       bool
+
+	autoscalerPolicy   bool
+	stoppedAutoscalers []appsv1.Deployment
 }
 
 func PlanRelease(ctx context.Context, target *Target) (*ReleasePlan, error) {
 	plan := &ReleasePlan{}
 	for _, read := range []func(context.Context, *Target) error{plan.readAgent, plan.readActors,
-		plan.readAutoscalers, plan.readMarks, plan.readPools, plan.readDefinitions} {
+		plan.readAutoscalerSwitch, plan.readAutoscalers, plan.readMarks, plan.readPools, plan.readDefinitions} {
 		if err := read(ctx, target); err != nil {
 			return nil, err
 		}
