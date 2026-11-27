@@ -157,7 +157,7 @@ func nodeRemovalPolicy(cluster EKSCluster, roleName string) string {
 	return compactJSON(map[string]any{"Version": "2012-10-17", "Statement": []any{
 		map[string]any{"Sid": "DescribeGroupsAndInstances", "Effect": "Allow",
 			"Action": []string{"autoscaling:DescribeAutoScalingInstances", "autoscaling:DescribeAutoScalingGroups",
-				"ec2:DescribeInstances"},
+				"ec2:DescribeInstances", "ec2:DescribeVolumes"},
 			"Resource": "*"},
 		map[string]any{"Sid": "ConfirmOwnGrant", "Effect": "Allow",
 			"Action": "iam:SimulatePrincipalPolicy", "Resource": role},
@@ -749,8 +749,8 @@ func nodeRemovalPolicyStep(runner *Runner, cluster EKSCluster, roleName, policyN
 	return Step{
 		Title: "Allow " + roleName + " to remove drained nodes and lower node group minimums of " + cluster.Name +
 			" only",
-		Why: "The inline policy " + policyName + " lets it describe Auto Scaling groups and EC2 instances, " +
-			"confirm its own grant with a policy simulation, and terminate an instance " +
+		Why: "The inline policy " + policyName + " lets it describe Auto Scaling groups, EC2 instances and " +
+			"their EBS volumes, confirm its own grant with a policy simulation, and terminate an instance " +
 			"only in a group of this region tagged kubernetes.io/cluster/" + cluster.Name + "=owned or " +
 			"eks:cluster-name=" + cluster.Name + ". On such a group it may also update the minimum size; IAM has no " +
 			"narrower key, so that request may also carry the desired capacity and other group settings, but IAM " +
