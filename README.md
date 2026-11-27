@@ -104,10 +104,11 @@ Cloud changes run through your own `az` or `aws` sign-in. `zoorikctl` never stor
   uses it (the pool keeps its nodes) and turns on Node Auto Provisioning, after which Azure refuses the
   autoscaler; on EKS it installs Karpenter with its IAM roles, interruption queue and discovery tags,
   and, where nodes join only through the `aws-auth` ConfigMap, switches the authentication mode to
-  `API_AND_CONFIG_MAP`, which cannot be switched back. On EKS it then scales the cluster autoscaler to 0
-  and adds an admission policy that refuses it coming back, so a Terraform or Helm apply that
-  reinstates it fails with a message instead of running two autoscalers. Where the switch cannot work
-  (for example kubenet on AKS), the autoscaler stays and `prepare` says why. A provisioner you already
+  `API_AND_CONFIG_MAP`, which cannot be switched back. On EKS it then adds an admission policy that
+  refuses the cluster autoscaler coming back and scales it to 0, so a Terraform or Helm apply that
+  reinstates it fails with a message instead of running two autoscalers. On both it deletes the
+  autoscaler's `cluster-autoscaler-status` ConfigMap. Where the switch cannot work (for example
+  kubenet or Calico network policy on AKS), the autoscaler stays and `prepare` says why. A provisioner you already
   run is kept: `prepare` only adds a default NodePool where it has none of the cluster's own, and the
   node class `zoorik-base` that Zoorik's own pools copy.
 - **Removing spare machines** (`grant-node-deletion`, and the second question in `connect`). On AKS: it
@@ -137,8 +138,8 @@ the agent and tells Zoorik that the cluster leaves the console. On a yes, it put
 minimums Zoorik lowered and removes the access `zoorikctl` granted in the cloud. It removes the
 webhook, roles and policies, and hands back what Zoorik changed on your autoscalers, workloads and
 nodes, each field only if it is still as Zoorik left it; on EKS it removes the admission policy and
-scales the cluster autoscaler back to what it was. On AKS the autoscaler stays off, because Node Auto
-Provisioning stays on. It moves your apps off Zoorik's own
+scales the cluster autoscaler back to what it was. On AKS a cluster autoscaler that `prepare` turned
+off stays off, because Node Auto Provisioning stays on. It moves your apps off Zoorik's own
 NodePools onto your machines, then empties and deletes those pools; a pod that cannot move holds its
 pool, and the run names it. Last, it deletes the resource definitions, the Helm release and the
 namespace. A disconnect that stops part-way picks up where it left off when you run it again.

@@ -255,6 +255,7 @@ func PlanEKS(ctx context.Context, runner *Runner, input Input) Plan {
 			return plan
 		}
 		switched = autoscalers
+		plan.Switch = true
 		plan.Found = append(plan.Found, autoscalerFound(autoscalers, groups)...)
 	}
 
@@ -684,8 +685,8 @@ func noteKeptAutoscaler(plan *Plan, groups []string, unread error, status, reaso
 	if len(groups) > 0 {
 		managed = "node group(s) " + strings.Join(groups, ", ")
 	}
-	plan.note("The cluster autoscaler stays on " + managed + " (its status is in " + status + "), and nothing is " +
-		"changed for it: " + reason + " Node optimization and workload optimization work as before.")
+	plan.note("The cluster autoscaler stays on " + managed + " (its status is in " + status + "). " + reason +
+		" Node optimization and workload optimization work as before.")
 	if unread != nil {
 		plan.note("The node groups it manages could not be read from " + status + " (" +
 			text.OneLine(innerCause(unread).Error()) + ").")

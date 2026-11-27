@@ -93,7 +93,11 @@ type aksCluster struct {
 		NetworkPlugin     string `json:"networkPlugin"`
 		NetworkPluginMode string `json:"networkPluginMode"`
 		NetworkDataplane  string `json:"networkDataplane"`
+		NetworkPolicy     string `json:"networkPolicy"`
 	} `json:"networkProfile"`
+	ServicePrincipalProfile *struct {
+		ClientID string `json:"clientId"`
+	} `json:"servicePrincipalProfile"`
 	AgentPoolProfiles []aksPoolProfile `json:"agentPoolProfiles"`
 }
 
@@ -122,6 +126,15 @@ func (p aksPoolProfile) autoscalerRange() string {
 		return ""
 	}
 	return strconv.Itoa(*p.MinCount) + " to " + strconv.Itoa(*p.MaxCount)
+}
+
+func (p aksPoolProfile) autoscalerOnCommand(cluster AzureCluster) string {
+	if p.MinCount == nil || p.MaxCount == nil {
+		return ""
+	}
+	return Cmd(azureCLI, "aks", "nodepool", "update", "--subscription", cluster.Subscription, "--resource-group",
+		cluster.ResourceGroup, "--cluster-name", cluster.Name, "--name", p.Name, "--enable-cluster-autoscaler",
+		"--min-count", strconv.Itoa(*p.MinCount), "--max-count", strconv.Itoa(*p.MaxCount), "-o", "none").String()
 }
 
 func (p aksPoolProfile) found() string {
@@ -159,6 +172,11 @@ func (c aksCluster) defaultPoolsOn() bool {
 
 func (c aksCluster) napReport() string {
 	return "Azure reports node provisioning mode " + c.napMode() + ", default NodePools " + c.napDefaultPools()
+}
+
+func (c aksCluster) servicePrincipal() bool {
+	return c.ServicePrincipalProfile != nil && c.ServicePrincipalProfile.ClientID != "" &&
+		!strings.EqualFold(c.ServicePrincipalProfile.ClientID, "msi")
 }
 
 func (c aksCluster) issuer() string {
@@ -209,6 +227,13 @@ func napCannotReplace(shown aksCluster, autoscaled []aksPoolProfile) string {
 		return "Its network plugin is " + text.OrText(plugin, "none (bring your own CNI)") + ", and Node Auto " +
 			"Provisioning runs only on Azure CNI."
 	}
+	if strings.EqualFold(shown.NetworkProfile.NetworkPolicy, "calico") {
+		return "The cluster uses Calico network policy, which Node Auto Provisioning does not support."
+	}
+	if shown.servicePrincipal() {
+		return "The cluster signs in to Azure with a service principal, and Node Auto Provisioning needs a managed " +
+			"identity."
+	}
 	var windows []string
 	for _, pool := range autoscaled {
 		if pool.windows() {
@@ -222,20 +247,24 @@ func napCannotReplace(shown aksCluster, autoscaled []aksPoolProfile) string {
 	return ""
 }
 
-func autoscalerOffStep(runner *Runner, cluster AzureCluster, showCommand Command, pool aksPoolProfile) Step {
+func autoscalerOffStep(runner *Runner, cluster AzureCluster, showCommand Command, pool aksPoolProfile,
+	first bool) Step {
 	off := cluster.autoscalerOffCommand(pool.Name)
-	kept := "The pool keeps the nodes it has, at that fixed count"
+	why := "The pool keeps the nodes it has, at that fixed count"
 	if nodes := pool.nodes(); nodes != "" {
-		kept = "The pool keeps its " + nodes + " at that fixed count"
+		why = "The pool keeps its " + nodes + " at that fixed count"
 	}
 	if span := pool.autoscalerRange(); span != "" {
-		kept += " (its autoscaler range was " + span + ")"
+		why += " (its autoscaler range was " + span + ")"
+	}
+	why += "; nothing adds nodes to it until Node Auto Provisioning is on."
+	if first {
+		why = "AKS turns Node Auto Provisioning on only when no node pool uses the cluster autoscaler, and from " +
+			"then on refuses the autoscaler on any pool while Node Auto Provisioning is on. " + why
 	}
 	return Step{
-		Title: "Turn off the cluster autoscaler on node pool " + pool.Name,
-		Why: "AKS turns Node Auto Provisioning on only when no node pool uses the cluster autoscaler. " + kept +
-			"; nothing adds nodes for Pending pods until Node Auto Provisioning is on, a few minutes later. From " +
-			"then on Azure refuses the autoscaler on any pool while Node Auto Provisioning is on.",
+		Title:    "Turn off the cluster autoscaler on node pool " + pool.Name,
+		Why:      why,
 		Commands: []string{off.String()},
 		Check: azureReports(runner, showCommand, func(shown aksCluster) bool {
 			return !shown.poolAutoscaled(pool.Name)
@@ -272,6 +301,7 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 		} else {
 			plan.note(pools.line)
 		}
+		plan.Steps = append(plan.Steps, staleStatusSteps(ctx, runner, input, nil)...)
 		if !found.Has(kube.KindAKSNodeClass, kube.BaseNodeClassName) {
 			plan.Steps = append(plan.Steps, aksBaseNodeClassStep(input.Target))
 		}
@@ -297,6 +327,7 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 		plan.Present = true
 		plan.note("Azure reports Node Auto Provisioning on, but this cluster does not serve its NodePool and " +
 			"AKSNodeClass resources yet. It is left as it is; run prepare again once they appear.")
+		plan.Steps = append(plan.Steps, staleStatusSteps(ctx, runner, input, &shown)...)
 		return plan
 	}
 	var switched []aksPoolProfile
@@ -306,11 +337,11 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 			plan.Provisioner = ProvisionerClusterAutoscaler
 			plan.AutoscaledPools = shown.autoscaledPools()
 			plan.note("The cluster autoscaler stays on node pool(s) " + strings.Join(plan.AutoscaledPools, ", ") +
-				", and nothing is changed for it: " + reason + " Node optimization and workload optimization work " +
-				"as before.")
+				". " + reason + " Node optimization and workload optimization work as before.")
 			return plan
 		}
 		switched = autoscaled
+		plan.Switch = true
 	}
 
 	checkAKSPrerequisites(&plan, shown)
@@ -324,9 +355,13 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 		return plan
 	}
 
-	for _, pool := range switched {
+	var putBack []string
+	for i, pool := range switched {
 		plan.Found = append(plan.Found, pool.found())
-		plan.Steps = append(plan.Steps, autoscalerOffStep(runner, cluster, showCommand, pool))
+		plan.Steps = append(plan.Steps, autoscalerOffStep(runner, cluster, showCommand, pool, i == 0))
+		if command := pool.autoscalerOnCommand(cluster); command != "" {
+			putBack = append(putBack, "`"+command+"`")
+		}
 	}
 	enable := append([]string{"aks", "update"}, cluster.selector()...)
 	enableCommand := Cmd(azureCLI, append(enable, napModeFlag, napModeAuto, napDefaultPoolsFlag, napDefaultPoolsAuto,
@@ -344,6 +379,10 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 		Apply: func(ctx context.Context, note func(string)) error {
 			note("az aks update is running; Azure usually takes several minutes")
 			if err := runner.Run(ctx, enableCommand); err != nil {
+				if len(putBack) > 0 {
+					return fmt.Errorf("%w. To put the cluster autoscaler back on the node pools turned off above, "+
+						"run %s", err, strings.Join(putBack, " and "))
+				}
 				return err
 			}
 			on, err := napOn(ctx)
@@ -361,9 +400,52 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 	})
 	if len(switched) > 0 && found.ClusterAutoscaler {
 		plan.Steps = append(plan.Steps, autoscalerStatusStep(input.Target, found.ClusterAutoscalerNamespace))
+	} else {
+		plan.Steps = append(plan.Steps, staleStatusSteps(ctx, runner, input, &shown)...)
 	}
 	plan.Steps = append(plan.Steps, aksBaseNodeClassStep(input.Target))
 	return plan
+}
+
+// staleStatusSteps deletes a cluster-autoscaler-status that still lists node groups while no node pool uses the
+// cluster autoscaler and no Deployment runs it, as after a switch that stopped once the pools were turned off.
+// shown is read from Azure when nil.
+func staleStatusSteps(ctx context.Context, runner *Runner, input Input, shown *aksCluster) []Step {
+	found := input.Found
+	if !found.ClusterAutoscaler {
+		return nil
+	}
+	if groups, err := kube.AutoscaledNodeGroups(ctx, input.Target); err != nil || len(groups) == 0 {
+		return nil
+	}
+	deployments, err := kube.ClusterAutoscalerDeployments(ctx, input.Target)
+	if err != nil {
+		return nil
+	}
+	for _, deployment := range deployments {
+		if deployment.Replicas > 0 {
+			return nil
+		}
+	}
+	if shown == nil {
+		if !runner.Available(azureCLI) {
+			return nil
+		}
+		cluster, err := resolveAzureCluster(ctx, runner, input)
+		if err != nil {
+			return nil
+		}
+		var read aksCluster
+		if runner.JSON(ctx, Cmd(azureCLI, append([]string{"aks", "show"}, append(cluster.selector(), "-o",
+			"json")...)...), &read) != nil {
+			return nil
+		}
+		shown = &read
+	}
+	if len(shown.autoscaledProfiles()) > 0 {
+		return nil
+	}
+	return []Step{autoscalerStatusStep(input.Target, found.ClusterAutoscalerNamespace)}
 }
 
 func readNAPCluster(ctx context.Context, runner *Runner, plan *Plan, input Input) AzureCluster {

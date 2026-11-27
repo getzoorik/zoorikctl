@@ -87,8 +87,10 @@ func autoscalerPolicyStep(target *kube.Target) Step {
 func autoscalerStopStep(target *kube.Target, deployment kube.AutoscalerDeployment) Step {
 	subject := deployment.Namespace + "/" + deployment.Name
 	replicas := fmt.Sprint(deployment.Replicas)
+	patch := kube.StopAutoscalerPatch(deployment.Replicas)
 	if deployment.Replicas == 0 {
 		replicas = deployment.Recorded
+		patch = `{"spec":{"replicas":0}}`
 	}
 	return Step{
 		Title: "Stop the cluster autoscaler " + subject,
@@ -97,7 +99,7 @@ func autoscalerStopStep(target *kube.Target, deployment kube.AutoscalerDeploymen
 			kube.AnnotationReplicasBeforeKarpenter + " so zoorikctl cluster disconnect can put it back. Its node " +
 			"groups keep the nodes they have.",
 		Commands: []string{target.Kubectl("-n " + deployment.Namespace + " patch deployment " + deployment.Name +
-			" --type=merge -p '" + kube.StopAutoscalerPatch(deployment.Replicas) + "'")},
+			" --type=merge -p '" + patch + "'")},
 		NotInPlace: "The cluster autoscaler " + subject + " still runs pods a minute after it was scaled to 0. " +
 			"Check `" + target.Kubectl("-n "+deployment.Namespace+" get deployment "+deployment.Name) + "`, then " +
 			"run " + prepareCommand + " again.",

@@ -186,15 +186,16 @@ PREPARE
   What provisions the nodes:
     AKS   Node Auto Provisioning (AKS's managed Karpenter). If the cluster autoscaler runs on any
           node pool, prepare turns it off on each such pool (az aks nodepool update
-          --disable-cluster-autoscaler; the pool keeps the nodes it has), then turns NAP on: AKS runs
-          NAP only when no pool autoscales, and refuses the autoscaler again while NAP is on. Where
-          NAP cannot replace it (kubenet or another non-Azure CNI, or an autoscaled Windows pool), the
-          autoscaler stays and nothing is changed. If NAP is off, prepare turns it on with its default
-          NodePools, which add nodes for Pending pods. If it is on, its NodePools and other
-          settings are kept, and where it has no NodePool of the cluster's own, prepare turns its
-          default NodePools on. Either way prepare adds the node class zoorik-base (Azure Linux)
-          that Zoorik's own zoorik-* pools clone. It refuses kubenet clusters, and names the
-          Windows pools NAP does not provision.
+          --disable-cluster-autoscaler; the pool keeps the nodes it has), turns NAP on, and deletes
+          the autoscaler's ConfigMap cluster-autoscaler-status: AKS runs NAP only when no pool
+          autoscales, and refuses the autoscaler again while NAP is on. Where NAP cannot replace it
+          (kubenet or another non-Azure CNI, Calico network policy, a service principal instead of a
+          managed identity, or an autoscaled Windows pool), the autoscaler stays and prepare says
+          why. If NAP is off, prepare turns it on with its default NodePools, which add nodes for
+          Pending pods. If it is on, its NodePools and other settings are kept, and where it has no
+          NodePool of the cluster's own, prepare turns its default NodePools on. Either way prepare
+          adds the node class zoorik-base (Azure Linux) that Zoorik's own zoorik-* pools clone. It
+          refuses kubenet clusters, and names the Windows pools NAP does not provision.
     EKS   Karpenter. A running Karpenter or EKS Auto Mode is kept as it is, except where it has
           no NodePool of the cluster's own: then prepare adds Karpenter's default NodePool on the
           cluster's own EC2NodeClass (the one named default, if there is one; it stops and says
@@ -208,12 +209,12 @@ PREPARE
           Karpenter as below, then adds the ValidatingAdmissionPolicy zoorik-no-cluster-autoscaler
           and its binding, which refuse such a Deployment with more than 0 replicas in any namespace,
           scales each one to 0 (recording its replicas in the annotation
-          coral.zoorik.com/replicas-before-karpenter), and deletes the status it leaves. A
-          Terraform, Helm or GitOps apply that brings it back then fails with a message that says
-          why. Without such a Deployment, or on a cluster that does not serve
-          ValidatingAdmissionPolicy, the autoscaler stays and nothing is changed. To install
-          Karpenter, prepare creates the node role KarpenterNodeRole-<cluster> and its access
-          entry, the controller role KarpenterControllerRole-<cluster> with Karpenter's
+          coral.zoorik.com/replicas-before-karpenter), and deletes the ConfigMap
+          cluster-autoscaler-status it leaves. A Terraform, Helm or GitOps apply that brings it back
+          then fails with a message that says why. Without such a Deployment, or on a cluster that
+          does not serve ValidatingAdmissionPolicy, the autoscaler stays and prepare says why. To
+          install Karpenter, prepare creates the node role KarpenterNodeRole-<cluster> and its
+          access entry, the controller role KarpenterControllerRole-<cluster> with Karpenter's
           cluster-scoped policy and an EKS Pod Identity association (adding the Pod Identity Agent
           add-on if missing), the interruption queue Karpenter-<cluster> with its four EventBridge
           rules, the karpenter.sh/discovery tag on the node groups' subnets and the cluster
@@ -436,10 +437,10 @@ DISCONNECT
   The zoorik-agent namespace stays while Zoorik could not be reached or the cloud changes are not
   undone: it holds the key and the settings a rerun needs. Running the same command again resumes
   where a run stopped.
-  These stay: the node provisioner and its pools (on AKS the cluster autoscaler stays off, since
-  Azure allows it only while Node Auto Provisioning is off), workload identity and the OIDC issuer
-  on AKS, the Pod Identity Agent on EKS, and the sizes and notes Zoorik set on pods that were not
-  restarted, until those pods are replaced.
+  These stay: the node provisioner and its pools (on AKS a cluster autoscaler prepare turned off
+  stays off, since Azure allows it only while Node Auto Provisioning is off), workload identity
+  and the OIDC issuer on AKS, the Pod Identity Agent on EKS, and the sizes and notes Zoorik set on
+  pods that were not restarted, until those pods are replaced.
 
   --kube-context     The kubeconfig context to disconnect. Without it, the current context.
   --yes, -y          Answer yes to the cloud question without asking.

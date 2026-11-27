@@ -101,6 +101,7 @@ type Plan struct {
 	Steps           []Step
 	AutoscaledPools []string
 	Poolless        bool
+	Switch          bool
 }
 
 type Binding struct {

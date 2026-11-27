@@ -323,8 +323,8 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 		plan.Steps = append(plan.Steps, roleRemovalStep(runner, subscription, role))
 	}
 	if shown.napOn() {
-		plan.note("Workload identity, the OIDC issuer and Node Auto Provisioning stay on; Azure allows the cluster " +
-			"autoscaler on a node pool only while Node Auto Provisioning is off.")
+		plan.note("Workload identity, the OIDC issuer and Node Auto Provisioning stay on, so a cluster autoscaler " +
+			"prepare turned off stays off.")
 	} else {
 		plan.note("Workload identity and the OIDC issuer stay on.")
 	}

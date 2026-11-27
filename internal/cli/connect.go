@@ -393,9 +393,9 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	out := s.out
 	out.Section("Cloud Setup")
 	out.Paragraph("", "Zoorik only removes nodes: the cluster's own provisioner or cluster autoscaler adds them "+
-		"for Pending pods. A cluster with neither, or with only the cluster autoscaler, gets its cloud's own "+
-		"provisioner now (in the autoscaler's place), and a provisioner with no "+
-		"NodePool of the cluster's own gets its default NodePools. Node optimization removes a node only after it "+
+		"for Pending pods. A cluster with no provisioner gets its cloud's own one now, and a cluster with only the "+
+		"cluster autoscaler gets it in the autoscaler's place where that can work; a provisioner with no NodePool "+
+		"of the cluster's own gets its default NodePools. Node optimization removes a node only after it "+
 		"has cordoned and emptied it, and on many node pools that last step, or the pool's minimum, needs a cloud "+
 		"permission the agent cannot grant itself. Each is set up now with your own cloud sign-in and asked for on "+
 		"its own; Zoorik never creates a machine or raises a pool's size.")
@@ -409,6 +409,8 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	grantLater := clusterCommand(grantVerb, target, options.Kubeconfig, options.ClusterResourceID)
 	provisionerLeft := "Until the cluster has a provisioner or a cluster autoscaler, nothing adds a node for a " +
 		"Pending pod."
+	switchLeft := "Rebalancing is not available until the switch is finished; the cluster autoscaler adds nodes " +
+		"for Pending pods on each node pool it still manages."
 	additionsLeft := "The cluster's provisioner adds nodes for Pending pods as before; what Zoorik adds to it for " +
 		"live migration and rebalancing is not there yet."
 	poollessLeft := "The cluster's provisioner has no NodePool of the cluster's own, so nothing adds a node for a " +
@@ -422,6 +424,9 @@ func grantAtConnect(ctx context.Context, s *session, target *kube.Target, identi
 	if err == nil {
 		provisioner = planProvisioner(ctx, out, target, identity, found, resource, kept)
 		grant.pin(provisioner)
+		if provisioner.Switch {
+			provisionerLeft = switchLeft
+		}
 	}
 	switch {
 	case err != nil:
