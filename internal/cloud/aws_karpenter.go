@@ -34,8 +34,6 @@ const (
 
 	installedVersionPlaceholder = "<the installed version>"
 
-	autoscalerDiscoveryTag = "k8s.io/cluster-autoscaler/enabled"
-
 	discoveryTag = "karpenter.sh/discovery"
 
 	nodeRolePrefix = "KarpenterNodeRole-"
@@ -185,6 +183,7 @@ func (d eksDescription) autoModeReport() string {
 func PlanEKS(ctx context.Context, runner *Runner, input Input) Plan {
 	plan := Plan{Cloud: kube.CloudAWS, Provisioner: ProvisionerKarpenter, Credential: "your AWS CLI credentials (aws)"}
 	found := input.Found
+	var switched []kube.AutoscalerDeployment
 	switch {
 	case found.AutoModeServed:
 		plan.Present = true
@@ -219,6 +218,16 @@ func PlanEKS(ctx context.Context, runner *Runner, input Input) Plan {
 				kube.KindEC2NodeClass+" "+poolClass+", which is not touched. "))
 		}
 		planEKSBaseNodeClass(ctx, &plan, input.Target, found, poolClass)
+		if found.ClusterAutoscaler && zoorikctlKarpenter(found) {
+			groups, err := kube.AutoscaledNodeGroups(ctx, input.Target)
+			if err != nil || len(groups) > 0 {
+				autoscalers, reason, err := switchableAutoscalers(ctx, input.Target, autoscalerStatus(found))
+				if err == nil && reason == "" {
+					plan.Steps = append(plan.Steps, autoscalerSwitchSteps(input.Target, autoscalers,
+						found.ClusterAutoscalerNamespace)...)
+				}
+			}
+		}
 		return plan
 	case found.NodePoolsServed:
 		plan.Present = true
@@ -227,16 +236,26 @@ func PlanEKS(ctx context.Context, runner *Runner, input Input) Plan {
 			"its nodes. It is left as it is.")
 		return plan
 	case found.ClusterAutoscaler:
-		groups, err := kube.AutoscaledNodeGroups(ctx, input.Target)
-		if err != nil || len(groups) > 0 {
+		groups, unread := kube.AutoscaledNodeGroups(ctx, input.Target)
+		if unread == nil && len(groups) == 0 {
+			plan.note("A cluster autoscaler reports its status in " + autoscalerStatus(found) + " but manages no " +
+				"node group, so Karpenter can be installed beside it. The autoscaler is left as it is.")
+			break
+		}
+		autoscalers, reason, err := switchableAutoscalers(ctx, input.Target, autoscalerStatus(found))
+		if err != nil {
+			blockRefused(&plan, err)
+			return plan
+		}
+		if reason != "" {
 			plan.Present = true
 			plan.Provisioner = ProvisionerClusterAutoscaler
 			plan.AutoscaledPools = groups
-			noteAutoscaledGroups(&plan, groups, err, autoscalerStatus(found))
+			noteKeptAutoscaler(&plan, groups, unread, autoscalerStatus(found), reason)
 			return plan
 		}
-		plan.note("A cluster autoscaler reports its status in " + autoscalerStatus(found) + " but manages no node " +
-			"group, so Karpenter can be installed beside it. The autoscaler is left as it is; Zoorik never changes it.")
+		switched = autoscalers
+		plan.Found = append(plan.Found, autoscalerFound(autoscalers, groups)...)
 	}
 
 	cluster, described, ok := signInEKS(ctx, runner, &plan, input, eksProvisioner)
@@ -306,6 +325,10 @@ func PlanEKS(ctx context.Context, runner *Runner, input Input) Plan {
 				"role and the discovery tags above. It is the cluster's own, not Zoorik's."),
 		defaultNodePoolStep(input.Target, kube.DefaultProvisionerName, ""),
 	)
+	if len(switched) > 0 {
+		plan.Steps = append(plan.Steps, autoscalerSwitchSteps(input.Target, switched,
+			found.ClusterAutoscalerNamespace)...)
+	}
 	return plan
 }
 
@@ -656,24 +679,26 @@ func autoscalerStatus(found kube.Autoprovisioner) string {
 	return found.ClusterAutoscalerNamespace + "/" + kube.ClusterAutoscalerStatus
 }
 
-func noteAutoscaledGroups(plan *Plan, groups []string, unread error, status string) {
+func noteKeptAutoscaler(plan *Plan, groups []string, unread error, status, reason string) {
 	managed := "its node groups"
 	if len(groups) > 0 {
 		managed = "node group(s) " + strings.Join(groups, ", ")
 	}
-	plan.note("A cluster autoscaler manages " + managed + " (its status is in " + status + ") and " +
-		"adds nodes for Pending pods, so Karpenter is not installed. The cluster keeps its autoscaler; Zoorik never " +
-		"changes it.")
+	plan.note("The cluster autoscaler stays on " + managed + " (its status is in " + status + "), and nothing is " +
+		"changed for it: " + reason + " Node optimization and workload optimization work as before.")
 	if unread != nil {
 		plan.note("The node groups it manages could not be read from " + status + " (" +
 			text.OneLine(innerCause(unread).Error()) + ").")
 	}
-	plan.note("Coral's rebalancing needs Karpenter, and Zoorik installs it only where the cluster autoscaler does " +
-		"not manage node groups. Take " + managed + " out of the cluster autoscaler (remove the " +
-		autoscalerDiscoveryTag + " tag from their Auto Scaling groups, or remove the autoscaler), then run " +
-		prepareCommand + " again once its status no longer lists them; each group keeps the nodes it has. Until " +
-		"then rebalancing is not available on this cluster; node optimization and workload optimization work as " +
-		"before.")
+}
+
+func zoorikctlKarpenter(found kube.Autoprovisioner) bool {
+	for _, controller := range found.Controllers {
+		if installedByZoorikctl(controller) {
+			return true
+		}
+	}
+	return false
 }
 
 func innerCause(err error) error {
