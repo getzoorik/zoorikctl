@@ -256,7 +256,7 @@ func PlanNodeDeletionAKS(ctx context.Context, runner *Runner, input Input) NodeD
 
 func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input) Plan {
 	plan := Plan{Cloud: kube.CloudAzure, Provisioner: NodeDeletionTitle, Credential: "your Azure CLI sign-in (az)"}
-	cluster, _, _, ok := signInAKS(ctx, runner, &plan, input, aksRemoval)
+	cluster, shown, _, ok := signInAKS(ctx, runner, &plan, input, aksRemoval)
 	if !ok {
 		return plan
 	}
@@ -322,7 +322,12 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 		plan.Found = append(plan.Found, "The role \""+role+"\", defined for subscription "+subscription)
 		plan.Steps = append(plan.Steps, roleRemovalStep(runner, subscription, role))
 	}
-	plan.note("Workload identity and the OIDC issuer stay on.")
+	if shown.napOn() {
+		plan.note("Workload identity, the OIDC issuer and Node Auto Provisioning stay on, so a cluster autoscaler " +
+			"prepare turned off stays off.")
+	} else {
+		plan.note("Workload identity and the OIDC issuer stay on.")
+	}
 	return plan
 }
 

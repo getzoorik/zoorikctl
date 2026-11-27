@@ -330,6 +330,7 @@ func (p *ReleasePlan) handBackItems() []ReleaseItem {
 		items = append(items, ReleaseItem{Step: step, Kind: kind, Namespace: namespace, Name: name,
 			Detail: detail})
 	}
+	items = append(items, p.autoscalerSwitchItems()...)
 	for _, floor := range p.floors {
 		_, detail := floor.handBack()
 		add(releaseStepFloor, floor.kind, floor.object.GetNamespace(), floor.object.GetName(), detail)
@@ -367,6 +368,9 @@ func (p *ReleasePlan) handBackItems() []ReleaseItem {
 }
 
 func (p *ReleasePlan) HandBack(ctx context.Context, target *Target, report func(ReleaseItem)) error {
+	if err := p.handBackAutoscalerSwitch(ctx, target, report); err != nil {
+		return err
+	}
 	for _, floor := range p.floors {
 		patch, detail := floor.handBack()
 		resource := hpaResource
