@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/getzoorik/zoorikctl/internal/kube"
@@ -65,9 +66,9 @@ func (c AzureCluster) upgradesCommand() string {
 	return Cmd(azureCLI, append([]string{"aks", "get-upgrades"}, append(c.selector(), "-o", "table")...)...).String()
 }
 
-func (c AzureCluster) disableAutoscalerCommand(pool string) string {
+func (c AzureCluster) autoscalerOffCommand(pool string) Command {
 	return Cmd(azureCLI, "aks", "nodepool", "update", "--subscription", c.Subscription, "--resource-group",
-		c.ResourceGroup, "--cluster-name", c.Name, "--name", pool, disableAutoscalerFlag).String()
+		c.ResourceGroup, "--cluster-name", c.Name, "--name", pool, disableAutoscalerFlag, "-o", "none")
 }
 
 type aksCluster struct {
@@ -93,11 +94,45 @@ type aksCluster struct {
 		NetworkPluginMode string `json:"networkPluginMode"`
 		NetworkDataplane  string `json:"networkDataplane"`
 	} `json:"networkProfile"`
-	AgentPoolProfiles []struct {
-		Name              string `json:"name"`
-		OSType            string `json:"osType"`
-		EnableAutoScaling bool   `json:"enableAutoScaling"`
-	} `json:"agentPoolProfiles"`
+	AgentPoolProfiles []aksPoolProfile `json:"agentPoolProfiles"`
+}
+
+type aksPoolProfile struct {
+	Name              string `json:"name"`
+	OSType            string `json:"osType"`
+	EnableAutoScaling bool   `json:"enableAutoScaling"`
+	Count             *int   `json:"count"`
+	MinCount          *int   `json:"minCount"`
+	MaxCount          *int   `json:"maxCount"`
+}
+
+func (p aksPoolProfile) windows() bool {
+	return strings.EqualFold(p.OSType, "Windows")
+}
+
+func (p aksPoolProfile) nodes() string {
+	if p.Count == nil {
+		return ""
+	}
+	return strconv.Itoa(*p.Count) + " node(s)"
+}
+
+func (p aksPoolProfile) autoscalerRange() string {
+	if p.MinCount == nil || p.MaxCount == nil {
+		return ""
+	}
+	return strconv.Itoa(*p.MinCount) + " to " + strconv.Itoa(*p.MaxCount)
+}
+
+func (p aksPoolProfile) found() string {
+	line := "Node pool " + p.Name + ": cluster autoscaler on"
+	if span := p.autoscalerRange(); span != "" {
+		line += ", " + span + " nodes"
+	}
+	if p.Count != nil {
+		line += ", " + strconv.Itoa(*p.Count) + " now"
+	}
+	return line
 }
 
 func (c aksCluster) napMode() string {
@@ -139,13 +174,77 @@ func (c aksCluster) workloadIdentity() bool {
 
 func (c aksCluster) autoscaledPools() []string {
 	var autoscaled []string
+	for _, pool := range c.autoscaledProfiles() {
+		autoscaled = append(autoscaled, pool.Name)
+	}
+	return autoscaled
+}
+
+func (c aksCluster) autoscaledProfiles() []aksPoolProfile {
+	var autoscaled []aksPoolProfile
 	for _, pool := range c.AgentPoolProfiles {
 		if pool.EnableAutoScaling {
-			autoscaled = append(autoscaled, pool.Name)
+			autoscaled = append(autoscaled, pool)
 		}
 	}
-	sort.Strings(autoscaled)
+	sort.Slice(autoscaled, func(i, j int) bool { return autoscaled[i].Name < autoscaled[j].Name })
 	return autoscaled
+}
+
+func (c aksCluster) poolAutoscaled(name string) bool {
+	for _, pool := range c.AgentPoolProfiles {
+		if pool.Name == name {
+			return pool.EnableAutoScaling
+		}
+	}
+	return false
+}
+
+func napCannotReplace(shown aksCluster, autoscaled []aksPoolProfile) string {
+	switch plugin := strings.ToLower(shown.NetworkProfile.NetworkPlugin); plugin {
+	case "azure":
+	case "kubenet":
+		return "The cluster uses kubenet networking, which Node Auto Provisioning does not support."
+	default:
+		return "Its network plugin is " + text.OrText(plugin, "none (bring your own CNI)") + ", and Node Auto " +
+			"Provisioning runs only on Azure CNI."
+	}
+	var windows []string
+	for _, pool := range autoscaled {
+		if pool.windows() {
+			windows = append(windows, pool.Name)
+		}
+	}
+	if len(windows) > 0 {
+		return "Node pool(s) " + strings.Join(windows, ", ") + " run Windows, and Node Auto Provisioning adds only " +
+			"Linux nodes."
+	}
+	return ""
+}
+
+func autoscalerOffStep(runner *Runner, cluster AzureCluster, showCommand Command, pool aksPoolProfile) Step {
+	off := cluster.autoscalerOffCommand(pool.Name)
+	kept := "The pool keeps the nodes it has, at that fixed count"
+	if nodes := pool.nodes(); nodes != "" {
+		kept = "The pool keeps its " + nodes + " at that fixed count"
+	}
+	if span := pool.autoscalerRange(); span != "" {
+		kept += " (its autoscaler range was " + span + ")"
+	}
+	return Step{
+		Title: "Turn off the cluster autoscaler on node pool " + pool.Name,
+		Why: "AKS turns Node Auto Provisioning on only when no node pool uses the cluster autoscaler. " + kept +
+			"; nothing adds nodes for Pending pods until Node Auto Provisioning is on, a few minutes later. From " +
+			"then on Azure refuses the autoscaler on any pool while Node Auto Provisioning is on.",
+		Commands: []string{off.String()},
+		Check: azureReports(runner, showCommand, func(shown aksCluster) bool {
+			return !shown.poolAutoscaled(pool.Name)
+		}),
+		Apply: func(ctx context.Context, note func(string)) error {
+			note("az aks nodepool update is running; Azure usually takes a minute or two")
+			return runner.Run(ctx, off)
+		},
+	}
 }
 
 func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
@@ -200,39 +299,18 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 			"AKSNodeClass resources yet. It is left as it is; run prepare again once they appear.")
 		return plan
 	}
-	if autoscaled := shown.autoscaledPools(); len(autoscaled) > 0 {
-		plan.Present = true
-		plan.Provisioner = ProvisionerClusterAutoscaler
-		plan.AutoscaledPools = autoscaled
-		pools := "node pool(s) " + strings.Join(autoscaled, ", ")
-		plan.note("The cluster autoscaler runs on " + pools + " and adds nodes for Pending pods, so Node Auto " +
-			"Provisioning is not turned on. The cluster keeps its autoscaler; Zoorik never changes it.")
-		var prerequisites Plan
-		checkAKSPrerequisites(&prerequisites, shown)
-		plan.Notes = append(plan.Notes, prerequisites.Notes...)
-		if len(prerequisites.Blockers) > 0 {
-			plan.note("Coral's rebalancing needs Node Auto Provisioning, and this cluster cannot turn it on: " +
-				prerequisites.Blockers[0].What + " So keep the cluster autoscaler on " + pools + ": rebalancing is " +
-				"not available on this cluster, and node optimization and workload optimization work as before.")
+	var switched []aksPoolProfile
+	if autoscaled := shown.autoscaledProfiles(); len(autoscaled) > 0 {
+		if reason := napCannotReplace(shown, autoscaled); reason != "" {
+			plan.Present = true
+			plan.Provisioner = ProvisionerClusterAutoscaler
+			plan.AutoscaledPools = shown.autoscaledPools()
+			plan.note("The cluster autoscaler stays on node pool(s) " + strings.Join(plan.AutoscaledPools, ", ") +
+				", and nothing is changed for it: " + reason + " Node optimization and workload optimization work " +
+				"as before.")
 			return plan
 		}
-		commands := make([]string, 0, len(autoscaled))
-		for _, pool := range autoscaled {
-			commands = append(commands, "`"+cluster.disableAutoscalerCommand(pool)+"`")
-		}
-		tooling := ""
-		if missing := missingUpdateFlags(ctx, runner, napModeFlag, napDefaultPoolsFlag); len(missing) > 0 {
-			tooling = " First update the Azure CLI on this machine (`az upgrade`, or `az extension add --name " +
-				"aks-preview`): its `az aks update` has no " + strings.Join(missing, " or ") + " yet, so prepare " +
-				"could not turn Node Auto Provisioning on afterwards."
-		}
-		plan.note("Coral's rebalancing needs Node Auto Provisioning, and AKS turns it on only when no node pool " +
-			"uses the cluster autoscaler." + tooling + " Turn autoscaling off on " + pools + " (" +
-			strings.Join(commands, "; ") + "), then run " + prepareCommand + " again; each pool keeps the nodes it " +
-			"has, and nothing adds nodes for Pending pods until Node Auto Provisioning is on. Until then " +
-			"rebalancing is not available on this cluster; node optimization and workload optimization work as " +
-			"before.")
-		return plan
+		switched = autoscaled
 	}
 
 	checkAKSPrerequisites(&plan, shown)
@@ -246,6 +324,10 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 		return plan
 	}
 
+	for _, pool := range switched {
+		plan.Found = append(plan.Found, pool.found())
+		plan.Steps = append(plan.Steps, autoscalerOffStep(runner, cluster, showCommand, pool))
+	}
 	enable := append([]string{"aks", "update"}, cluster.selector()...)
 	enableCommand := Cmd(azureCLI, append(enable, napModeFlag, napModeAuto, napDefaultPoolsFlag, napDefaultPoolsAuto,
 		"-o", "none")...)
@@ -277,6 +359,9 @@ func PlanAKS(ctx context.Context, runner *Runner, input Input) Plan {
 			return nil
 		},
 	})
+	if len(switched) > 0 && found.ClusterAutoscaler {
+		plan.Steps = append(plan.Steps, autoscalerStatusStep(input.Target, found.ClusterAutoscalerNamespace))
+	}
 	plan.Steps = append(plan.Steps, aksBaseNodeClassStep(input.Target))
 	return plan
 }
@@ -450,7 +535,7 @@ func checkAKSPrerequisites(plan *Plan, shown aksCluster) {
 	}
 	var windows []string
 	for _, pool := range shown.AgentPoolProfiles {
-		if strings.EqualFold(pool.OSType, "Windows") {
+		if pool.windows() {
 			windows = append(windows, pool.Name)
 		}
 	}
