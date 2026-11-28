@@ -18,31 +18,32 @@ func AzureCloudShell(vm AzureVM, grant api.AzureVMGrant, org string) string {
 			word(grant.AppID) + "; ORG=" + word(org),
 		`RGL=$(printf %s "$RG" | tr '[:upper:]' '[:lower:]')`,
 		"DISKS=" + word(diskRole) + "; CATALOG=" + word(catalogRole),
-		`role_defined() { [ -n "$(az role definition list --custom-role-only true --name "$1" --scope ` +
-			`"/subscriptions/$SUB" --query '[0].id' -o tsv)" ]; }`,
+		`role_id() { az role definition list --custom-role-only true --name "$1" --scope "/subscriptions/$SUB" ` +
+			`--query '[0].id' -o tsv; }`,
 		`assigned() { [ -n "$(az role assignment list --assignee "$SP" --role "$1" --scope "$2" --query '[0].id' ` +
 			`-o tsv)" ]; }`,
 		`az account set --subscription "$SUB"`,
 		`az ad sp show --id "$APP" -o none 2>/dev/null || az ad sp create --id "$APP" -o none`,
 		`SP=$(az ad sp show --id "$APP" --query id -o tsv)`,
-		`role_defined "$DISKS"   || az role definition create --role-definition ` +
+		`[ -n "$(role_id "$DISKS")" ]   || az role definition create --role-definition ` +
 			word(vmRoleDefinition(diskRole, vm.Subscription, grant.DiskRole)) + ` -o none`,
-		`role_defined "$CATALOG" || az role definition create --role-definition ` +
+		`[ -n "$(role_id "$CATALOG")" ] || az role definition create --role-definition ` +
 			word(vmRoleDefinition(catalogRole, vm.Subscription, grant.CatalogRole)) + ` -o none`,
-		`until role_defined "$DISKS" && role_defined "$CATALOG"; do sleep 10; done`,
+		`until DISKS_ID=$(role_id "$DISKS"); CATALOG_ID=$(role_id "$CATALOG"); [ -n "$DISKS_ID" ] && ` +
+			`[ -n "$CATALOG_ID" ]; do sleep 10; done`,
 		`az tag update --resource-id "/subscriptions/$SUB/resourceGroups/$RG" --operation Merge --tags ` +
 			word(grant.OrgTagKey+"=") + `"$ORG" -o none`,
-		`assigned "$DISKS" "/subscriptions/$SUB/resourceGroups/$RG" || az role assignment create --assignee-object-id ` +
-			`"$SP" --assignee-principal-type ServicePrincipal --role "$DISKS" --scope ` +
+		`assigned "$DISKS_ID" "/subscriptions/$SUB/resourceGroups/$RG" || az role assignment create ` +
+			`--assignee-object-id "$SP" --assignee-principal-type ServicePrincipal --role "$DISKS_ID" --scope ` +
 			`"/subscriptions/$SUB/resourceGroups/$RG" -o none`,
 		`for DISK in $(az vm show --ids "$VM" --query 'storageProfile.dataDisks[].managedDisk.id' -o tsv); do`,
 		`  DES=$(az disk show --ids "$DISK" --query encryption.diskEncryptionSetId -o tsv)`,
 		`  case "$(printf %s "$DES" | tr '[:upper:]' '[:lower:]')" in ""|*/resourcegroups/"$RGL"/*) ;; *) assigned ` +
-			`"$DISKS" "$DES" || az role assignment create --assignee-object-id "$SP" --assignee-principal-type ` +
-			`ServicePrincipal --role "$DISKS" --scope "$DES" -o none ;; esac`,
+			`"$DISKS_ID" "$DES" || az role assignment create --assignee-object-id "$SP" --assignee-principal-type ` +
+			`ServicePrincipal --role "$DISKS_ID" --scope "$DES" -o none ;; esac`,
 		`done`,
-		`assigned "$CATALOG" "/subscriptions/$SUB" || az role assignment create --assignee-object-id "$SP" ` +
-			`--assignee-principal-type ServicePrincipal --role "$CATALOG" --scope "/subscriptions/$SUB" -o none`,
+		`assigned "$CATALOG_ID" "/subscriptions/$SUB" || az role assignment create --assignee-object-id "$SP" ` +
+			`--assignee-principal-type ServicePrincipal --role "$CATALOG_ID" --scope "/subscriptions/$SUB" -o none`,
 	}, "\n")
 }
 
