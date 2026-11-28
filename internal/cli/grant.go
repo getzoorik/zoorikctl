@@ -468,8 +468,9 @@ func planCloudUndo(ctx context.Context, out *ui.Printer, target *kube.Target, id
 	switch identity.Cloud {
 	case kube.CloudAzure:
 		plan = cloud.PlanNodeDeletionCleanupAKS(ctx, runner, input)
-		created = "the \"Zoorik Node Removal v2\" or \"Zoorik Node Removal v1\" role assignments on the cluster " +
-			"and the managed identity zoorik-agent-<cluster> in its resource group"
+		created = "the \"Zoorik Node Removal v2\" or \"Zoorik Node Removal v1\" role assignments on the cluster, " +
+			"the \"Zoorik Spot Capacity Reader v1\" assignment on its subscription and the managed identity " +
+			"zoorik-agent-<cluster> in its resource group"
 		lowered = "each agent pool's minimum tagged coral.zoorik.com_original-min"
 	case kube.CloudAWS:
 		plan = cloud.PlanNodeDeletionCleanupEKS(ctx, runner, input)

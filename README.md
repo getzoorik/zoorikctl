@@ -113,9 +113,11 @@ Cloud changes run through your own `az` or `aws` sign-in. `zoorikctl` never stor
   node class `zoorik-base` that Zoorik's own pools copy.
 - **Removing spare machines** (`grant-node-deletion`, and the second question in `connect`). On AKS: it
   turns on workload identity and the OIDC issuer if they are off, and creates a managed identity
-  `zoorik-agent-<cluster>` with the custom role "Zoorik Node Removal v2" on this cluster only. On EKS:
-  an IAM role `zoorik-agent-<cluster>` whose policy is limited to this cluster's node groups, bound
-  with EKS Pod Identity.
+  `zoorik-agent-<cluster>` with the custom role "Zoorik Node Removal v2" on this cluster only, and the
+  read-only role "Zoorik Spot Capacity Reader v1" on the subscription, which reads a region's spot
+  vCPU quota and how likely spot capacity is. On EKS: an IAM role `zoorik-agent-<cluster>` whose
+  policy is limited to this cluster's node groups, plus reading the region's spot vCPU quota and how
+  likely spot capacity is, bound with EKS Pod Identity.
 - **A VM's data disks** (`vm connect`, if you agree). On Azure: Zoorik's app joins your Microsoft Entra
   directory, the first time only, with the custom role `Zoorik Amoeba VM Disks v1 <subscription>` on
   the VM's resource group (and on the disk encryption sets its data disks use in other groups) and the
