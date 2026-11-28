@@ -161,6 +161,10 @@ func (r customRole) ready(ctx context.Context, runner *Runner, subscription stri
 	return customRoleReady(ctx, runner, subscription, r.name, r.actions)
 }
 
+func (r customRole) id(ctx context.Context, runner *Runner, subscription string) (string, error) {
+	return customRoleID(ctx, runner, subscription, r.name, r.actions)
+}
+
 func PlanNodeDeletionAKS(ctx context.Context, runner *Runner, input Input) NodeDeletion {
 	plan := Plan{Cloud: kube.CloudAzure, Provisioner: NodeDeletionTitle, Credential: "your Azure CLI sign-in (az)"}
 	cluster, shown, showCommand, ok := signInAKS(ctx, runner, &plan, input, aksNodeDeletion)
@@ -354,7 +358,7 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 		if len(definitions) == 0 {
 			continue
 		}
-		if others := otherAssignments(ctx, runner, cluster, role, holders); others > 0 {
+		if others := otherAssignments(ctx, runner, cluster, definitions, holders); others > 0 {
 			plan.note(fmt.Sprintf("The role \"%s\" stays: %d other assignment(s) in subscription %s still use it.",
 				role, others, subscription))
 			continue
@@ -371,17 +375,19 @@ func PlanNodeDeletionCleanupAKS(ctx context.Context, runner *Runner, input Input
 	return plan
 }
 
-func otherAssignments(ctx context.Context, runner *Runner, cluster AzureCluster, role string,
+func otherAssignments(ctx context.Context, runner *Runner, cluster AzureCluster, definitions []roleDefinition,
 	holders []string) int {
-	var assignments []roleAssignment
-	if runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", cluster.Subscription,
-		"--role", role, "--all", "--fill-principal-name", "false", "-o", "json"), &assignments) != nil {
-		return 0
-	}
 	others := 0
-	for _, assignment := range assignments {
-		if !strings.EqualFold(assignment.Scope, cluster.ID()) && !stringList(holders).has(assignment.PrincipalID) {
-			others++
+	for _, definition := range definitions {
+		var assignments []roleAssignment
+		if runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", cluster.Subscription,
+			"--role", definition.ID, "--all", "--fill-principal-name", "false", "-o", "json"), &assignments) != nil {
+			return 0
+		}
+		for _, assignment := range assignments {
+			if !strings.EqualFold(assignment.Scope, cluster.ID()) && !stringList(holders).has(assignment.PrincipalID) {
+				others++
+			}
 		}
 	}
 	return others
@@ -818,15 +824,15 @@ func roleDefinitionStep(runner *Runner, subscription string, extended *roleDefin
 	ready := func(ctx context.Context) (bool, error) {
 		return nodeRemovalRoleReady(ctx, runner, subscription)
 	}
-	awaitListed := func(ctx context.Context, note func(string)) error {
-		note("waiting for Azure to list the role in subscription " + subscription + "; it can take a few minutes")
-		listed, err := waitFor(ctx, func() (bool, error) { return ready(ctx) })
+	unlisted := fmt.Errorf("Azure did not list the role %q in subscription %s within %s; run this again",
+		nodeRemovalRole, subscription, crdWait)
+	awaitListed := func(ctx context.Context, note func(string), unlisted error) error {
+		listed, err := roleListed(ctx, note, subscription, ready)
 		if err != nil {
 			return err
 		}
 		if !listed {
-			return fmt.Errorf("Azure did not list the role %q in subscription %s within %s; run this again",
-				nodeRemovalRole, subscription, crdWait)
+			return unlisted
 		}
 		return nil
 	}
@@ -850,7 +856,7 @@ func roleDefinitionStep(runner *Runner, subscription string, extended *roleDefin
 				if err := runner.Run(ctx, update); err != nil {
 					return err
 				}
-				return awaitListed(ctx, note)
+				return awaitListed(ctx, note, unlisted)
 			},
 		}
 	}
@@ -871,31 +877,32 @@ func roleDefinitionStep(runner *Runner, subscription string, extended *roleDefin
 			}
 			err = runner.Run(ctx, create)
 			if stderrHas(err, "RoleDefinitionWithSameNameExists") {
-				return fmt.Errorf("a custom role named %q already exists in this Azure tenant, in a subscription your "+
-					"sign-in cannot list; check that it allows exactly %s and nothing else, add \"/subscriptions/%s\" "+
-					"to its AssignableScopes with az role definition update, and run this again: %w", nodeRemovalRole,
-					strings.Join(nodeRemovalActions, ", "), subscription, err)
+				return awaitListed(ctx, note, fmt.Errorf("a custom role named %q already exists in this Azure "+
+					"tenant, in a subscription your sign-in cannot list; check that it allows exactly %s and nothing "+
+					"else, add \"/subscriptions/%s\" to its AssignableScopes with az role definition update, and run "+
+					"this again: %w", nodeRemovalRole, strings.Join(nodeRemovalActions, ", "), subscription, err))
 			}
 			if err != nil {
 				return err
 			}
-			return awaitListed(ctx, note)
+			return awaitListed(ctx, note, unlisted)
 		},
 	}
 }
 
 func roleAssignmentStep(runner *Runner, cluster AzureCluster, chosen azureIdentity, identityShow Command) Step {
-	assign := func(principal string) Command {
+	assign := func(principal, role string) Command {
 		return Cmd(azureCLI, "role", "assignment", "create", "--subscription", cluster.Subscription,
 			"--assignee-object-id", principal, "--assignee-principal-type", managedIdentityPrincipal, "--role",
-			nodeRemovalRole, "--scope", cluster.ID(), "-o", "none")
+			role, "--scope", cluster.ID(), "-o", "none")
 	}
 	principal := principalOf(runner, identityShow)
 	return Step{
 		Title: "Assign \"" + nodeRemovalRole + "\" to " + chosen.Name + " on " + cluster.Name + " only",
 		Why: "The assignment's scope is this one managed cluster, so the identity can delete machines of this " +
 			"cluster's agent pools and create or change those pools, and nothing in any other cluster.",
-		Commands: []string{assign(text.OrText(chosen.PrincipalID, "<principal id of "+chosen.Name+">")).String()},
+		Commands: []string{assign(text.OrText(chosen.PrincipalID, "<principal id of "+chosen.Name+">"),
+			nodeRemovalRole).String()},
 		Check: func(ctx context.Context) (bool, error) {
 			ready, err := nodeRemovalRoleReady(ctx, runner, cluster.Subscription)
 			if err != nil || !ready {
@@ -917,9 +924,9 @@ func roleAssignmentStep(runner *Runner, cluster AzureCluster, chosen azureIdenti
 				return fmt.Errorf("the managed identity %s was not found in %s", chosen.Name, chosen.ResourceGroup)
 			}
 			note("assigning; Azure can take a few minutes to see a new identity or role")
-			done, err := assignWhenListed(ctx, runner, func(ctx context.Context) (bool, error) {
-				return nodeRemovalRoleReady(ctx, runner, cluster.Subscription)
-			}, assign(id))
+			done, err := assignWhenListed(ctx, runner, func(ctx context.Context) (string, error) {
+				return nodeRemoval.id(ctx, runner, cluster.Subscription)
+			}, func(role string) Command { return assign(id, role) })
 			if err != nil {
 				return err
 			}
@@ -975,10 +982,10 @@ func spotCapacitySteps(runner *Runner, cluster AzureCluster, chosen azureIdentit
 		define = Cmd(azureCLI, "role", "definition", "update", "--role-definition",
 			spotCapacity.extension(*extended, subscription), "-o", "none")
 	}
-	assign := func(principal string) Command {
+	assign := func(principal, role string) Command {
 		return Cmd(azureCLI, "role", "assignment", "create", "--subscription", subscription,
 			"--assignee-object-id", principal, "--assignee-principal-type", managedIdentityPrincipal, "--role",
-			spotCapacityRole, "--scope", scope, "-o", "none")
+			role, "--scope", scope, "-o", "none")
 	}
 	principal := principalOf(runner, identityShow)
 	undefined, unassigned := "", ""
@@ -994,35 +1001,36 @@ func spotCapacitySteps(runner *Runner, cluster AzureCluster, chosen azureIdentit
 					return err
 				}
 				err = runner.Run(ctx, define)
+				exists := stderrHas(err, "RoleDefinitionWithSameNameExists")
 				switch {
 				case stderrHas(err, "AuthorizationFailed"):
 					undefined = "not granted, as your sign-in may not define the role on the subscription; " +
 						spotCapacityLeft
 					return nil
-				case stderrHas(err, "RoleDefinitionWithSameNameExists"):
+				case err != nil && !exists:
+					return err
+				}
+				listed, err := roleListed(ctx, note, subscription, ready)
+				switch {
+				case err != nil:
+					return err
+				case listed:
+					return nil
+				case exists:
 					undefined = "not granted, as a role of this name is defined in a subscription your sign-in " +
 						"cannot list; " + spotCapacityLeft
 					return nil
-				case err != nil:
-					return err
 				}
-				note("waiting for Azure to list the role in subscription " + subscription + "; it can take a few minutes")
-				listed, err := waitFor(ctx, func() (bool, error) { return ready(ctx) })
-				if err != nil {
-					return err
-				}
-				if !listed {
-					return fmt.Errorf("Azure did not list the role %q in subscription %s within %s; run this again",
-						spotCapacityRole, subscription, crdWait)
-				}
-				return nil
+				return fmt.Errorf("Azure did not list the role %q in subscription %s within %s; run this again",
+					spotCapacityRole, subscription, crdWait)
 			},
 			Kept: func() string { return undefined },
 		},
 		{
-			Title:    "Assign \"" + spotCapacityRole + "\" to " + chosen.Name + " on subscription " + subscription,
-			Why:      spotCapacityWhy,
-			Commands: []string{assign(text.OrText(chosen.PrincipalID, "<principal id of "+chosen.Name+">")).String()},
+			Title: "Assign \"" + spotCapacityRole + "\" to " + chosen.Name + " on subscription " + subscription,
+			Why:   spotCapacityWhy,
+			Commands: []string{assign(text.OrText(chosen.PrincipalID, "<principal id of "+chosen.Name+">"),
+				spotCapacityRole).String()},
 			Check: func(ctx context.Context) (bool, error) {
 				present, err := ready(ctx)
 				if err != nil || !present {
@@ -1051,7 +1059,9 @@ func spotCapacitySteps(runner *Runner, cluster AzureCluster, chosen azureIdentit
 					return fmt.Errorf("the managed identity %s was not found in %s", chosen.Name, chosen.ResourceGroup)
 				}
 				note("assigning; Azure can take a few minutes to see a new identity or role")
-				done, err := assignWhenListed(ctx, runner, ready, assign(id))
+				done, err := assignWhenListed(ctx, runner, func(ctx context.Context) (string, error) {
+					return spotCapacity.id(ctx, runner, subscription)
+				}, func(role string) Command { return assign(id, role) })
 				if stderrHas(err, "AuthorizationFailed") {
 					unassigned = "not granted, as your sign-in may not assign it on the subscription; " +
 						spotCapacityLeft
@@ -1070,14 +1080,14 @@ func spotCapacitySteps(runner *Runner, cluster AzureCluster, chosen azureIdentit
 	}
 }
 
-func assignWhenListed(ctx context.Context, runner *Runner, ready func(ctx context.Context) (bool, error),
-	assign Command) (bool, error) {
+func assignWhenListed(ctx context.Context, runner *Runner, roleID func(ctx context.Context) (string, error),
+	assign func(role string) Command) (bool, error) {
 	return waitFor(ctx, func() (bool, error) {
-		present, err := ready(ctx)
-		if err != nil || !present {
+		role, err := roleID(ctx)
+		if err != nil || role == "" {
 			return false, err
 		}
-		err = runner.Run(ctx, assign)
+		err = runner.Run(ctx, assign(role))
 		switch {
 		case err == nil, stderrHas(err, "RoleAssignmentExists"):
 			return true, nil
@@ -1189,22 +1199,34 @@ func customRoles(ctx context.Context, runner *Runner, subscription, role string)
 	return definitions, err
 }
 
+func roleListed(ctx context.Context, note func(string), subscription string,
+	ready func(context.Context) (bool, error)) (bool, error) {
+	note("waiting for Azure to list the role in subscription " + subscription + "; it can take a few minutes")
+	return waitFor(ctx, func() (bool, error) { return ready(ctx) })
+}
+
 func nodeRemovalRoleReady(ctx context.Context, runner *Runner, subscription string) (bool, error) {
 	return customRoleReady(ctx, runner, subscription, nodeRemovalRole, nodeRemovalActions)
 }
 
 func customRoleReady(ctx context.Context, runner *Runner, subscription, role string, actions []string) (bool,
 	error) {
+	id, err := customRoleID(ctx, runner, subscription, role, actions)
+	return id != "", err
+}
+
+func customRoleID(ctx context.Context, runner *Runner, subscription, role string, actions []string) (string,
+	error) {
 	definitions, err := customRoles(ctx, runner, subscription, role)
 	if err != nil || len(definitions) == 0 {
-		return false, err
+		return "", err
 	}
 	for _, definition := range definitions {
 		if !definition.only(actions) {
-			return false, nil
+			return "", nil
 		}
 	}
-	return true, nil
+	return definitions[0].ID, nil
 }
 
 func roleToDefine(ctx context.Context, runner *Runner, plan *Plan, subscription string, role customRole) (
@@ -1309,15 +1331,18 @@ func assignmentsAt(ctx context.Context, runner *Runner, subscription, scope, rol
 	if err != nil || len(definitions) == 0 {
 		return nil, err
 	}
-	var listed []roleAssignment
-	if err := runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", subscription,
-		"--scope", scope, "--role", role, "--fill-principal-name", "false", "-o", "json"), &listed); err != nil {
-		return nil, err
-	}
 	var assignments []roleAssignment
-	for _, assignment := range listed {
-		if strings.EqualFold(assignment.Scope, scope) {
-			assignments = append(assignments, assignment)
+	for _, definition := range definitions {
+		var listed []roleAssignment
+		if err := runner.JSON(ctx, Cmd(azureCLI, "role", "assignment", "list", "--subscription", subscription,
+			"--scope", scope, "--role", definition.ID, "--fill-principal-name", "false", "-o", "json"),
+			&listed); err != nil {
+			return nil, err
+		}
+		for _, assignment := range listed {
+			if strings.EqualFold(assignment.Scope, scope) {
+				assignments = append(assignments, assignment)
+			}
 		}
 	}
 	return assignments, nil

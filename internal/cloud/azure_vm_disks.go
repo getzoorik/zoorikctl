@@ -214,34 +214,39 @@ func vmRoleStep(runner *Runner, subscription, name string, role api.AzureRole) S
 			if err != nil || present {
 				return err
 			}
-			if err := runner.Run(ctx, create); err != nil {
+			err = runner.Run(ctx, create)
+			exists := stderrHas(err, "RoleDefinitionWithSameNameExists")
+			if err != nil && !exists {
 				return err
 			}
-			note("waiting for Azure to list the role in subscription " + subscription + "; it can take a few minutes")
-			listed, err := waitFor(ctx, func() (bool, error) { return ready(ctx) })
-			if err != nil {
+			listed, err := roleListed(ctx, note, subscription, ready)
+			switch {
+			case err != nil:
 				return err
+			case listed:
+				return nil
+			case exists:
+				return fmt.Errorf("a custom role named %q already exists in this Azure tenant, in a subscription "+
+					"your sign-in cannot list; add \"/subscriptions/%s\" to its AssignableScopes with az role "+
+					"definition update, and run this again", name, subscription)
 			}
-			if !listed {
-				return fmt.Errorf("Azure did not list the role %q in subscription %s within %s", name, subscription,
-					crdWait)
-			}
-			return nil
+			return fmt.Errorf("Azure did not list the role %q in subscription %s within %s", name, subscription,
+				crdWait)
 		},
 	}
 }
 
 func vmAssignmentStep(runner *Runner, subscription, role string, actions []string, scope, principalShown string,
 	servicePrincipal func(context.Context) (string, error), title, why string) Step {
-	assign := func(principal string) Command {
+	assign := func(principal, roleID string) Command {
 		return Cmd(azureCLI, "role", "assignment", "create", "--subscription", subscription, "--assignee-object-id",
-			principal, "--assignee-principal-type", managedIdentityPrincipal, "--role", role, "--scope", scope,
+			principal, "--assignee-principal-type", managedIdentityPrincipal, "--role", roleID, "--scope", scope,
 			"-o", "none")
 	}
 	return Step{
 		Title:    title,
 		Why:      why,
-		Commands: []string{assign(principalShown).String()},
+		Commands: []string{assign(principalShown, role).String()},
 		Check: func(ctx context.Context) (bool, error) {
 			ready, err := customRoleReady(ctx, runner, subscription, role, actions)
 			if err != nil || !ready {
@@ -264,11 +269,11 @@ func vmAssignmentStep(runner *Runner, subscription, role string, actions []strin
 			}
 			note("assigning; Azure can take a few minutes to see a new app or role")
 			done, err := waitFor(ctx, func() (bool, error) {
-				ready, err := customRoleReady(ctx, runner, subscription, role, actions)
-				if err != nil || !ready {
+				roleID, err := customRoleID(ctx, runner, subscription, role, actions)
+				if err != nil || roleID == "" {
 					return false, err
 				}
-				err = runner.Run(ctx, assign(principal))
+				err = runner.Run(ctx, assign(principal, roleID))
 				switch {
 				case err == nil, stderrHas(err, "RoleAssignmentExists"):
 					return true, nil
